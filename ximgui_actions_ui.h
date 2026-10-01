@@ -286,28 +286,34 @@ namespace ximgui::actions
             ImDrawList*  d = ImGui::GetWindowDrawList();
             ImFont*      pFont = ImGui::GetFont();
             const float  Small = ImGui::GetFontSize() * 0.78f;
-            const float  W = 3.4f * U, H = 5.4f * U, BtnH = 2.3f * U;
+            const float  W = 3.9f * U, H = 5.4f * U, BtnH = 2.3f * U;
             int Hovered = 0;
 
             // The body.
-            d->AddRectFilled(O, ImVec2(O.x + W, O.y + H), IM_COL32(12, 12, 14, 255), W * 0.45f);
+            d->AddRectFilled(O, ImVec2(O.x + W, O.y + H), IM_COL32(12, 12, 14, 255), 28.0f);
 
             struct region { int m_Id; ImVec2 m_Min, m_Max; ImDrawFlags m_Round; const char* m_pLabel; };
             const float Half = W * 0.5f;
             const region Regions[] =
-            { { -1, ImVec2(O.x + 2.0f,        O.y + 2.0f), ImVec2(O.x + Half - 1.0f, O.y + BtnH), ImDrawFlags_RoundCornersTopLeft,  "LMB" }
-            , { -2, ImVec2(O.x + Half + 1.0f, O.y + 2.0f), ImVec2(O.x + W - 2.0f,    O.y + BtnH), ImDrawFlags_RoundCornersTopRight, "RMB" }
-            , { -3, ImVec2(O.x + Half - 0.32f * U, O.y + 0.45f * U), ImVec2(O.x + Half + 0.32f * U, O.y + 1.55f * U), ImDrawFlags_RoundCornersAll, "" } };
+            { { -1, ImVec2(O.x + 4.0f,                O.y + 4.0f), ImVec2(O.x + Half - 0.42f * U, O.y + BtnH), 0, "LMB" }
+            , { -2, ImVec2(O.x + Half + 0.42f * U,    O.y + 4.0f), ImVec2(O.x + W - 4.0f,         O.y + BtnH), 0, "RMB" }
+            , { -3, ImVec2(O.x + Half - 0.26f * U,    O.y + 0.35f * U), ImVec2(O.x + Half + 0.26f * U, O.y + 1.45f * U), 0, "" } };
 
             for (const region& R : Regions)
             {
                 bool bHere = false, bOther = false;
                 const char* pName = nullptr;
+                const char* pName2 = nullptr;
                 for (const flat_gesture& F : All)
                 {
                     const int Id = MouseRegion(F.m_pG->m_Input == mouse_input::Middle ? mouse_input::Wheel : F.m_pG->m_Input);
                     if (Id != R.m_Id) continue;
-                    if ((F.m_pG->m_Mods & ImGuiMod_Mask_) == Mods) { bHere = true; if (!pName) pName = F.m_pG->m_pName; }
+                    if ((F.m_pG->m_Mods & ImGuiMod_Mask_) == Mods)
+                    {
+                        bHere = true;
+                        if (!pName) pName = F.m_pG->m_pName;
+                        else if (!pName2 && std::string_view(pName) != F.m_pG->m_pName) pName2 = F.m_pG->m_pName;
+                    }
                     else bOther = true;
                 }
                 ImVec4 Color = bHere ? ImVec4(0.32f, 0.50f, 0.78f, 1.0f) : ImVec4(0.25f, 0.25f, 0.28f, 1.0f);
@@ -319,24 +325,28 @@ namespace ximgui::actions
                 if (ImGui::IsItemHovered()) { Hovered = R.m_Id; Color = ImVec4(Color.x + 0.08f, Color.y + 0.08f, Color.z + 0.08f, 1.0f); }
                 if (ImGui::IsItemClicked() && pPinned) *pPinned = (*pPinned == R.m_Id) ? 0 : R.m_Id;
 
-                d->AddRectFilled(R.m_Min, R.m_Max, ImGui::ColorConvertFloat4ToU32(Color), 5.0f, R.m_Round);
-                d->AddRect(R.m_Min, R.m_Max, IM_COL32(112, 112, 124, 255), 5.0f, R.m_Round);
-                if (pPinned && *pPinned == R.m_Id) d->AddRect(R.m_Min, R.m_Max, IM_COL32(235, 235, 240, 255), 5.0f, R.m_Round, 1.5f);
+                d->AddRectFilled(R.m_Min, R.m_Max, ImGui::ColorConvertFloat4ToU32(Color), 6.0f);
+                d->AddRect(R.m_Min, R.m_Max, IM_COL32(112, 112, 124, 255), 6.0f);
+                if (pPinned && *pPinned == R.m_Id) d->AddRect(R.m_Min, R.m_Max, IM_COL32(235, 235, 240, 255), 6.0f, 0, 1.5f);
                 if (bOther) d->AddTriangleFilled(ImVec2(R.m_Max.x - 9.0f, R.m_Min.y + 1.0f), ImVec2(R.m_Max.x - 1.0f, R.m_Min.y + 1.0f), ImVec2(R.m_Max.x - 1.0f, R.m_Min.y + 9.0f), IM_COL32(190, 150, 215, 255));
                 if (R.m_pLabel[0])
                 {
                     d->AddText(pFont, ImGui::GetFontSize(), ImVec2(R.m_Min.x + 6.0f, R.m_Min.y + 4.0f), IM_COL32(235, 235, 240, 255), R.m_pLabel);
-                    if (pName)
-                    {
-                        d->PushClipRect(R.m_Min, R.m_Max, true);
-                        d->AddText(pFont, Small, ImVec2(R.m_Min.x + 6.0f, R.m_Min.y + 0.9f * U), IM_COL32(255, 255, 255, 235), pName);
-                        d->PopClipRect();
-                    }
+                    d->PushClipRect(R.m_Min, R.m_Max, true);
+                    if (pName)  d->AddText(pFont, Small, ImVec2(R.m_Min.x + 6.0f, R.m_Min.y + 0.8f * U),  IM_COL32(255, 255, 255, 235), pName);
+                    if (pName2) d->AddText(pFont, Small, ImVec2(R.m_Min.x + 6.0f, R.m_Min.y + 1.15f * U), IM_COL32(255, 255, 255, 200), pName2);
+                    d->PopClipRect();
                 }
-                else if (pName) d->AddText(pFont, Small, ImVec2(O.x + Half - ImGui::CalcTextSize(pName).x * 0.39f, O.y + 1.7f * U), IM_COL32(255, 255, 255, 235), pName);
+                else if (pName)         // the wheel (and the middle button): its names go under the buttons, centred
+                {
+                    std::string Text = pName;
+                    if (pName2) { Text += ", "; Text += pName2; }
+                    const float TextW = ImGui::CalcTextSize(Text.c_str()).x * (Small / ImGui::GetFontSize());
+                    d->AddText(pFont, Small, ImVec2(O.x + Half - TextW * 0.5f, O.y + BtnH + 0.2f * U), IM_COL32(255, 255, 255, 235), Text.c_str());
+                }
             }
 
-            d->AddRect(O, ImVec2(O.x + W, O.y + H), IM_COL32(112, 112, 124, 255), W * 0.45f);
+            d->AddRect(O, ImVec2(O.x + W, O.y + H), IM_COL32(112, 112, 124, 255), 28.0f);
             ImGui::SetCursorScreenPos(O);
             ImGui::Dummy(ImVec2(W, H));
             return Hovered;
@@ -390,7 +400,7 @@ namespace ximgui::actions
             for (const gesture_set& S : O.m_Gestures) for (const gesture& G : S.m_List) Flat.push_back({ S.m_pSurface, &G });
 
             details::keyboard_args A;
-            A.m_Unit      = std::clamp((pVp->Size.x * 0.9f - 24.0f) / (details::k_KeyboardUnitsW + 4.4f), 30.0f, 54.0f);
+            A.m_Unit      = std::clamp((pVp->Size.x * 0.9f - 24.0f) / (details::k_KeyboardUnitsW + 5.0f), 30.0f, 54.0f);
             A.m_bNames    = true;
             A.m_Mods      = Mods;
             A.m_pToggle[0]= &O.m_bCtrl; A.m_pToggle[1] = &O.m_bShift; A.m_pToggle[2] = &O.m_bAlt;
