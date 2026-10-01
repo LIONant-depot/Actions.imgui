@@ -105,6 +105,52 @@ namespace ximgui::actions
             for (auto& T : It->m_Toolbars) Ctx.m_Toolbars[T.m_Name] = T.m_Items;
         }
 
+        // Presets: the other keymap files in the same folder.
+        Ctx.m_Presets = {};
+        if (!UserName.empty() && !Chain.empty())
+        {
+            Ctx.m_Presets.m_Base = Chain.front().m_Base;
+            Ctx.m_Presets.m_List = [Dir, UserName]
+            {
+                std::vector<std::string> Names;
+                std::error_code Ec;
+                for (const auto& E : std::filesystem::directory_iterator(Dir, Ec))
+                {
+                    const std::string File = E.path().filename().string();
+                    constexpr std::string_view Ext = ".keymap.txt";
+                    if (File.size() > Ext.size() && File.compare(File.size() - Ext.size(), Ext.size(), Ext) == 0)
+                        if (std::string Name = File.substr(0, File.size() - Ext.size()); Name != UserName) Names.push_back(std::move(Name));
+                }
+                std::sort(Names.begin(), Names.end());
+                return Names;
+            };
+            Ctx.m_Presets.m_SetBase = [&Ctx, Dir, UserName](const std::string& Base)
+            {
+                keymap_file User;
+                (void)LoadKeymap(Dir, UserName, User);
+                User.m_Base = (Base == UserName) ? std::string{} : Base;
+                if (auto Err = SaveKeymap(Dir, UserName, User); Err) Ctx.Problem(std::format("keymap '{}' could not be saved: {}", UserName, Err.getMessage()));
+                const std::wstring D = Dir; const std::string U = UserName;     // this closure is replaced by the call below: copy first
+                ApplyKeymapLayers(Ctx, D, U);
+            };
+            Ctx.m_Presets.m_SaveAs = [&Ctx, Dir, UserName](const std::string& Name) -> std::string
+            {
+                if (Name.empty()) return "give the keymap a name";
+                if (Name == UserName) return "that is your own keymap file; pick another name";
+                for (const char c : Name) if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-')) return "use letters, digits, '-' and '_' in the name";
+                keymap_file Out;
+                for (const auto& [Path, Chords] : Ctx.m_Overrides)
+                {
+                    std::string Keys;
+                    for (const ImGuiKeyChord C : Chords) Keys += (Keys.empty() ? "" : ",") + ChordName(C);
+                    Out.m_Bindings.push_back({ Path, Keys });
+                }
+                for (const auto& [ToolbarName, Items] : Ctx.m_Toolbars) Out.m_Toolbars.push_back({ ToolbarName, Items });
+                if (auto Err = SaveKeymap(Dir, Name, Out); Err) return std::format("could not be saved: {}", Err.getMessage());
+                return {};
+            };
+        }
+
         // Editing on the keymap page changes only this person's own file (the first of the chain), then everything is layered again.
         if (!UserName.empty() && !Chain.empty())
         {

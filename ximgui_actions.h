@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <functional>
 #include <optional>
+#include <span>
 #include <format>
 #include <cctype>
 #include <functional>
@@ -192,6 +193,51 @@ namespace ximgui::actions
     // The context
     //==============================================================================================
 
+    //==============================================================================================
+    // Mouse gestures: what the mouse does on a surface. Descriptions only (the surface handles the mouse itself, as it always did), so
+    // they can be listed - on the mouse in the F1 view, and in the status line under the cursor. A surface declares its table once:
+    //
+    //      static constexpr gesture Viewport[] =
+    //      { { 0,              mouse_input::Left,  mouse_kind::Click, "Select",    "Selects the entity under the mouse." }
+    //      , { ImGuiMod_Ctrl,  mouse_input::Left,  mouse_kind::Click, "Add",       "Adds it to the selection, or takes it out." } };
+    //
+    // and the panel registers it every frame, next to its scopes: Ctx.Gestures("Viewport", Viewport) inside Begin/End, or GesturesWindow.
+    //==============================================================================================
+
+    enum class mouse_input : std::uint8_t { Left, Right, Middle, Wheel };
+    enum class mouse_kind  : std::uint8_t { Click, DoubleClick, Drag, Scroll };
+
+    struct gesture
+    {
+        ImGuiKeyChord m_Mods;           // ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiMod_Alt held while it is done (0 = none)
+        mouse_input   m_Input;
+        mouse_kind    m_Kind;
+        const char*   m_pName;          // "Select"
+        const char*   m_pHelp;          // what it does, one sentence
+        const char*   m_pAlso = nullptr;// keys that go with it ("W A S D Q E"), or nullptr
+    };
+
+    // "Ctrl+LMB click", "RMB drag + W A S D Q E", "Wheel".
+    inline std::string GestureText(const gesture& G)
+    {
+        std::string S;
+        if (G.m_Mods & ImGuiMod_Ctrl)  S += "Ctrl+";
+        if (G.m_Mods & ImGuiMod_Shift) S += "Shift+";
+        if (G.m_Mods & ImGuiMod_Alt)   S += "Alt+";
+        switch (G.m_Input) { case mouse_input::Left: S += "LMB"; break; case mouse_input::Right: S += "RMB"; break; case mouse_input::Middle: S += "MMB"; break; case mouse_input::Wheel: S += "Wheel"; break; }
+        switch (G.m_Kind)  { case mouse_kind::Click: S += " click"; break; case mouse_kind::DoubleClick: S += " double-click"; break; case mouse_kind::Drag: S += " drag"; break; case mouse_kind::Scroll: break; }
+        if (G.m_pAlso) { S += " + "; S += G.m_pAlso; }
+        return S;
+    }
+
+    // The gestures one surface (a window) makes live.
+    struct gesture_set
+    {
+        ImGuiID                     m_Window  = 0;
+        const char*                 m_pSurface= "";     // "Viewport"
+        std::span<const gesture>    m_List;
+    };
+
     struct context
     {
         xproperty::settings::context                                m_Settings;
@@ -279,12 +325,39 @@ namespace ximgui::actions
             std::vector<scope_entry> m_Order;                    // what was live THEN: the palette itself takes the focus
         } m_Palette;
 
+        // The last hint that was shown, and the frame: F1 pins it (Explain) if it was on screen a moment ago.
+        hint_text   m_LastHint;
+        int         m_LastHintFrame = -100;
+
+        // The pinned hint card: an action's card kept on screen, with what can be done to its key. Drawn by ximgui_actions_ui.h.
+        struct pinned_state
+        {
+            bool         m_bOpen      = false;
+            int          m_OpenFrame  = 0;
+            std::string  m_Path;                                 // the action
+            ImVec2       m_Pos{ 0, 0 };                          // where the cursor was
+            ImGuiWindow* m_pPrevFocus = nullptr;
+        } m_Pinned;
+
+        // The host jumps to the Keymap page, at this action. Unset: the card has no "Show in keymap".
+        std::function<void(const std::string&)> m_OnShowInKeymap;
+
         struct capture_state
         {
             std::string   m_Path;                                // the action whose key is being captured ("" = not capturing)
             ImGuiKeyChord m_Chord = 0;                           // a captured chord that another action already has...
             std::string   m_ConflictWith;                        // ...and that action's path (waiting for Replace / Cancel)
         } m_Capture;
+
+        // Presets: keymap files that can be the base of a person's own, and saving one's own keys as a new shareable one. Filled in by
+        // ApplyKeymapLayers (ximgui_actions_keymap.h); empty until a keymap is loaded.
+        struct preset_api
+        {
+            std::string                                     m_Base;         // the preset the person's file sits on ("" = the code defaults)
+            std::function<std::vector<std::string>()>       m_List;         // the presets there are (every keymap file but the person's own)
+            std::function<void(const std::string&)>         m_SetBase;      // sit on this one ("" = the defaults)
+            std::function<std::string(const std::string&)>  m_SaveAs;       // write my keys as a keymap named so; "" = done, otherwise why not
+        } m_Presets;
 
         // A person edited a binding on the keymap page: Path, the new keys ("" = unbound), or bReset (back to the layer below).
         // The keymap layers install this; without it the edit only lives in m_Overrides.
@@ -303,10 +376,35 @@ namespace ximgui::actions
             int                      m_PinnedKey  = 0;           // the key that was clicked (an ImGuiKey): its details stay on screen
             ImGuiWindow*             m_pPrevFocus = nullptr;
             std::vector<scope_entry> m_Order;                    // what was live THEN
+            std::vector<gesture_set> m_Gestures;                 // the mouse gestures that applied THEN
         } m_Overlay;
 
         // The keyboard under the palette's search box (it follows the selected row). The person's choice, so it outlives the palette.
         bool m_bKeyboardInPalette = true;
+
+        // F1: explains what the mouse rests on - pins the card of the action it has a hint for - or, over nothing, shows the keyboard.
+        void Explain()
+        {
+            if (m_Pinned.m_bOpen)  { ClosePinned();  return; }
+            if (m_Overlay.m_bOpen) { CloseOverlay(); return; }
+            if (ImGui::GetFrameCount() - m_LastHintFrame <= 2 && FindByPath(m_LastHint.m_Detail))
+            {
+                m_Pinned = {};
+                m_Pinned.m_bOpen     = true;
+                m_Pinned.m_OpenFrame = ImGui::GetFrameCount();
+                m_Pinned.m_Path      = m_LastHint.m_Detail;
+                m_Pinned.m_Pos       = ImGui::GetIO().MousePos;
+                if (ImGuiContext* g = ImGui::GetCurrentContext(); g) m_Pinned.m_pPrevFocus = g->NavWindow;
+                return;
+            }
+            OpenOverlay();
+        }
+        void ClosePinned()
+        {
+            if (m_Capture.m_Path == m_Pinned.m_Path) m_Capture = {};
+            if (m_Pinned.m_pPrevFocus) ImGui::FocusWindow(m_Pinned.m_pPrevFocus);
+            m_Pinned = {};
+        }
 
         void OpenOverlay()
         {
@@ -318,6 +416,7 @@ namespace ximgui::actions
             auto Order = FocusOrder();
             if (Order.empty()) Order = AllEntries();
             for (const scope_entry* p : Order) m_Overlay.m_Order.push_back(*p);
+            m_Overlay.m_Gestures = GestureOrder();
         }
         void CloseOverlay()
         {
@@ -385,6 +484,67 @@ namespace ximgui::actions
         {
             m_Overrides[Path] = ParseChecked(Keys, "keymap page");
             if (m_OnBindingChange) m_OnBindingChange(*this, Path, Keys, false);
+        }
+
+        // Can it run where the person was working? "" = yes; otherwise why not (including "not available there").
+        std::string ReasonNow(const action_info& A)
+        {
+            for (const scope_entry* pE : AllEntries())
+                if (pE->m_pObject == A.m_pObject && Live(*pE, A)) return Reason(A, pE->m_pInstance);
+            return "not available where you were working";
+        }
+
+        // Any action of any editor seen so far, by its path.
+        const action_info* FindByPath(std::string_view Path)
+        {
+            if (Path.empty()) return nullptr;
+            for (auto& [pObj, Actions] : Types())
+                for (auto& A : Actions) if (A.m_Path == Path) return &A;
+            return nullptr;
+        }
+
+        // The other action of the same editor and scope that already has Chord (the two would fight for the key). "" = none.
+        std::string FindClash(const std::string& Path, ImGuiKeyChord Chord)
+        {
+            const action_info* pMe = FindByPath(Path);
+            if (!pMe) return {};
+            for (auto& A : Actions(*pMe->m_pObject))
+            {
+                if (A.m_Path == Path || A.m_Scope != pMe->m_Scope) continue;
+                for (const ImGuiKeyChord C : Chords(A)) if (C == Chord) return A.m_Path;
+            }
+            return {};
+        }
+
+        // "Set key": while an action's key is being captured, the next key pressed becomes its key. Esc cancels. A key another action of the
+        // same scope has waits for Replace / Cancel (ResolveClash). Call every frame while IsCapturing() and the person has to press something.
+        void PollCapture()
+        {
+            if (!m_Capture.m_ConflictWith.empty()) return;                      // waiting for the person to choose
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) { m_Capture = {}; return; }
+            for (int k = ImGuiKey_Tab; k <= ImGuiKey_Oem102; ++k)
+            {
+                if (k >= ImGuiKey_LeftCtrl && k <= ImGuiKey_RightSuper) continue;     // a modifier alone is not a key
+                if (!ImGui::IsKeyPressed(static_cast<ImGuiKey>(k), false)) continue;
+                const ImGuiKeyChord Chord = (static_cast<ImGuiKeyChord>(ImGui::GetIO().KeyMods) & ImGuiMod_Mask_) | k;
+                if (std::string Other = FindClash(m_Capture.m_Path, Chord); !Other.empty()) { m_Capture.m_Chord = Chord; m_Capture.m_ConflictWith = std::move(Other); }
+                else { SetKeys(m_Capture.m_Path, ChordName(Chord)); m_Capture = {}; }
+                return;
+            }
+        }
+
+        // The person chose: Replace takes the key off the other action and gives it to this one; Cancel leaves everything as it was.
+        void ResolveClash(bool bReplace)
+        {
+            if (bReplace)
+                if (const action_info* pOther = FindByPath(m_Capture.m_ConflictWith); pOther)
+                {
+                    std::string Rest;
+                    for (const ImGuiKeyChord C : Chords(*pOther)) if (C != m_Capture.m_Chord) Rest += (Rest.empty() ? "" : ",") + ChordName(C);
+                    SetKeys(pOther->m_Path, Rest);
+                    SetKeys(m_Capture.m_Path, ChordName(m_Capture.m_Chord));
+                }
+            m_Capture = {};
         }
 
         void ResetKeys(const std::string& Path)
@@ -491,6 +651,30 @@ namespace ximgui::actions
             if (pWindow) m_Windows.push_back({ pWindow->ID, MakeEntry(*xproperty::getObject(Owner), &Owner, { Prefixes... }) });
         }
 
+        // Call inside the panel's Begin/End: the mouse gestures of this surface (see gesture). The table must outlive the frame (make it static).
+        void Gestures(const char* pSurface, std::span<const gesture> List)
+        {
+            if (ImGuiWindow* pWindow = ImGui::GetCurrentWindowRead(); pWindow) m_WindowGestures.push_back({ pWindow->ID, pSurface, List });
+        }
+        void GesturesWindow(ImGuiWindow* pWindow, const char* pSurface, std::span<const gesture> List)
+        {
+            if (pWindow) m_WindowGestures.push_back({ pWindow->ID, pSurface, List });
+        }
+
+        // The gestures that apply where the mouse is: the window under it (innermost first), then the focused one. One entry per surface.
+        std::vector<gesture_set> GestureOrder(bool bHoveredOnly = false)
+        {
+            std::vector<gesture_set> Out;
+            auto Chain = [&](ImGuiWindow* pW)
+            {
+                for (; pW; pW = pW->ParentWindow)
+                    for (const gesture_set& G : m_PrevWindowGestures)
+                        if (G.m_Window == pW->ID && std::none_of(Out.begin(), Out.end(), [&](const gesture_set& X) { return X.m_pSurface == G.m_pSurface; })) Out.push_back(G);
+            };
+            if (ImGuiContext* g = ImGui::GetCurrentContext(); g) { Chain(g->HoveredWindow); if (!bHoveredOnly) Chain(g->NavWindow); }
+            return Out;
+        }
+
         // Live whenever nothing more specific takes the key (the host's own actions).
         template<typename T, typename...T_PREFIXES>
         void Global(T& Owner, T_PREFIXES...Prefixes)
@@ -528,6 +712,7 @@ namespace ximgui::actions
         {
             if (m_Types.size() != m_ValidatedTypes) { m_ValidatedTypes = m_Types.size(); (void)Validate(); }   // a new editor type was seen: check its keys
             m_PrevWindows = std::move(m_Windows);   m_Windows.clear();
+            m_PrevWindowGestures = std::move(m_WindowGestures);   m_WindowGestures.clear();
             m_PrevGlobals = std::move(m_Globals);   m_Globals.clear();
         }
 
@@ -569,6 +754,32 @@ namespace ximgui::actions
                     const auto Why = Reason(A, pE->m_pInstance);
                     S += A.m_Path + "\t" + KeysText(A) + "\t" + (Why.empty() ? std::string("ok") : Why) + "\n";
                 }
+            return S;
+        }
+
+        // The actions that can be used where the person was working, as (path, "keys - help"): the palette's list, for others to offer too.
+        std::vector<std::pair<std::string, std::string>> LiveActions()
+        {
+            std::vector<std::pair<std::string, std::string>> Out;
+            std::vector<std::pair<const action_info*, void*>> Seen;
+            for (const scope_entry* pE : AllEntries())
+                for (auto& A : Actions(*pE->m_pObject))
+                {
+                    if (!IsLive(*pE, A) || Hidden(A, pE->m_pInstance)) continue;
+                    if (std::find(Seen.begin(), Seen.end(), std::make_pair(&A, pE->m_pInstance)) != Seen.end()) continue;
+                    Seen.emplace_back(&A, pE->m_pInstance);
+                    const std::string Keys = KeysText(A);
+                    Out.push_back({ A.m_Path, (Keys.empty() ? std::string{} : "[" + Keys + "] ") + (A.m_pHelp ? A.m_pHelp : "") });
+                }
+            return Out;
+        }
+
+        // Every mouse gesture the surfaces of the last frame declared: "Surface<tab>LMB click<tab>Name" per line.
+        std::string ListGestures()
+        {
+            std::string S;
+            for (const gesture_set& G : m_PrevWindowGestures)
+                for (const gesture& X : G.m_List) S += std::string(G.m_pSurface) + "\t" + GestureText(X) + "\t" + X.m_pName + "\n";
             return S;
         }
 
@@ -663,6 +874,7 @@ namespace ximgui::actions
 
         void ShowHint(const hint_text& H)
         {
+            m_LastHint = H;  m_LastHintFrame = ImGui::GetFrameCount();          // what F1 explains (Explain)
             if (m_pShowHint) { m_pShowHint(H); return; }
             std::string Text = H.m_Topic + (H.m_Shortcut.empty() ? "" : "  (" + H.m_Shortcut + ")");
             if (!H.m_Disabled.empty()) Text += " - " + H.m_Disabled;
@@ -702,6 +914,7 @@ namespace ximgui::actions
         std::size_t                                                                     m_KnownIndexed   = 0;
         std::unordered_map<const xproperty::type::object*, std::vector<action_info>>    m_Types;
         std::vector<window_scope>                                                       m_Windows, m_PrevWindows;
+        std::vector<gesture_set>                                                        m_WindowGestures, m_PrevWindowGestures;
         std::vector<scope_entry>                                                        m_Globals, m_PrevGlobals;
         std::vector<std::pair<const action_info*, void*>>                               m_Pending;
 

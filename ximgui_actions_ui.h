@@ -274,6 +274,92 @@ namespace ximgui::actions
             else ImGui::TextDisabled("Hover a key to see what is on it. Click a key to keep it here.");
             ImGui::EndChild();
         }
+        // The mouse, drawn beside the keyboard: its two buttons and the wheel, coloured like the keys by what the surfaces do with them in the layer
+        // shown. Regions: -1 left button, -2 right button, -3 wheel / middle button. Returns the one under the mouse (0 = none).
+        struct flat_gesture { const char* m_pSurface; const gesture* m_pG; };
+
+        inline int MouseRegion(mouse_input In) noexcept { return In == mouse_input::Left ? -1 : In == mouse_input::Right ? -2 : -3; }
+
+        inline int DrawMouse(const std::vector<flat_gesture>& All, ImGuiKeyChord Mods, float U, int* pPinned)
+        {
+            const ImVec2 O = ImGui::GetCursorScreenPos();
+            ImDrawList*  d = ImGui::GetWindowDrawList();
+            ImFont*      pFont = ImGui::GetFont();
+            const float  Small = ImGui::GetFontSize() * 0.78f;
+            const float  W = 3.4f * U, H = 5.4f * U, BtnH = 2.3f * U;
+            int Hovered = 0;
+
+            // The body.
+            d->AddRectFilled(O, ImVec2(O.x + W, O.y + H), IM_COL32(12, 12, 14, 255), W * 0.45f);
+
+            struct region { int m_Id; ImVec2 m_Min, m_Max; ImDrawFlags m_Round; const char* m_pLabel; };
+            const float Half = W * 0.5f;
+            const region Regions[] =
+            { { -1, ImVec2(O.x + 2.0f,        O.y + 2.0f), ImVec2(O.x + Half - 1.0f, O.y + BtnH), ImDrawFlags_RoundCornersTopLeft,  "LMB" }
+            , { -2, ImVec2(O.x + Half + 1.0f, O.y + 2.0f), ImVec2(O.x + W - 2.0f,    O.y + BtnH), ImDrawFlags_RoundCornersTopRight, "RMB" }
+            , { -3, ImVec2(O.x + Half - 0.32f * U, O.y + 0.45f * U), ImVec2(O.x + Half + 0.32f * U, O.y + 1.55f * U), ImDrawFlags_RoundCornersAll, "" } };
+
+            for (const region& R : Regions)
+            {
+                bool bHere = false, bOther = false;
+                const char* pName = nullptr;
+                for (const flat_gesture& F : All)
+                {
+                    const int Id = MouseRegion(F.m_pG->m_Input == mouse_input::Middle ? mouse_input::Wheel : F.m_pG->m_Input);
+                    if (Id != R.m_Id) continue;
+                    if ((F.m_pG->m_Mods & ImGuiMod_Mask_) == Mods) { bHere = true; if (!pName) pName = F.m_pG->m_pName; }
+                    else bOther = true;
+                }
+                ImVec4 Color = bHere ? ImVec4(0.32f, 0.50f, 0.78f, 1.0f) : ImVec4(0.25f, 0.25f, 0.28f, 1.0f);
+
+                ImGui::SetCursorScreenPos(R.m_Min);
+                ImGui::PushID(R.m_Id);
+                ImGui::InvisibleButton("##mouse", ImVec2(R.m_Max.x - R.m_Min.x, R.m_Max.y - R.m_Min.y));
+                ImGui::PopID();
+                if (ImGui::IsItemHovered()) { Hovered = R.m_Id; Color = ImVec4(Color.x + 0.08f, Color.y + 0.08f, Color.z + 0.08f, 1.0f); }
+                if (ImGui::IsItemClicked() && pPinned) *pPinned = (*pPinned == R.m_Id) ? 0 : R.m_Id;
+
+                d->AddRectFilled(R.m_Min, R.m_Max, ImGui::ColorConvertFloat4ToU32(Color), 5.0f, R.m_Round);
+                d->AddRect(R.m_Min, R.m_Max, IM_COL32(112, 112, 124, 255), 5.0f, R.m_Round);
+                if (pPinned && *pPinned == R.m_Id) d->AddRect(R.m_Min, R.m_Max, IM_COL32(235, 235, 240, 255), 5.0f, R.m_Round, 1.5f);
+                if (bOther) d->AddTriangleFilled(ImVec2(R.m_Max.x - 9.0f, R.m_Min.y + 1.0f), ImVec2(R.m_Max.x - 1.0f, R.m_Min.y + 1.0f), ImVec2(R.m_Max.x - 1.0f, R.m_Min.y + 9.0f), IM_COL32(190, 150, 215, 255));
+                if (R.m_pLabel[0])
+                {
+                    d->AddText(pFont, ImGui::GetFontSize(), ImVec2(R.m_Min.x + 6.0f, R.m_Min.y + 4.0f), IM_COL32(235, 235, 240, 255), R.m_pLabel);
+                    if (pName)
+                    {
+                        d->PushClipRect(R.m_Min, R.m_Max, true);
+                        d->AddText(pFont, Small, ImVec2(R.m_Min.x + 6.0f, R.m_Min.y + 0.9f * U), IM_COL32(255, 255, 255, 235), pName);
+                        d->PopClipRect();
+                    }
+                }
+                else if (pName) d->AddText(pFont, Small, ImVec2(O.x + Half - ImGui::CalcTextSize(pName).x * 0.39f, O.y + 1.7f * U), IM_COL32(255, 255, 255, 235), pName);
+            }
+
+            d->AddRect(O, ImVec2(O.x + W, O.y + H), IM_COL32(112, 112, 124, 255), W * 0.45f);
+            ImGui::SetCursorScreenPos(O);
+            ImGui::Dummy(ImVec2(W, H));
+            return Hovered;
+        }
+
+        // The strip under the keyboard when the mouse is what is hovered / kept: every gesture on that button (the layer shown first).
+        inline void DrawGestureDetails(const std::vector<flat_gesture>& All, int Region, ImGuiKeyChord Mods, int Lines)
+        {
+            if (!ImGui::BeginChild("##gesturedetails", ImVec2(0.0f, ImGui::GetTextLineHeightWithSpacing() * static_cast<float>(Lines) + 6.0f), ImGuiChildFlags_Borders)) { ImGui::EndChild(); return; }
+            std::vector<flat_gesture> V;
+            for (const flat_gesture& F : All) if (MouseRegion(F.m_pG->m_Input == mouse_input::Middle ? mouse_input::Wheel : F.m_pG->m_Input) == Region) V.push_back(F);
+            std::stable_sort(V.begin(), V.end(), [&](const flat_gesture& L, const flat_gesture& R)
+                { return ((L.m_pG->m_Mods & ImGuiMod_Mask_) == Mods) > ((R.m_pG->m_Mods & ImGuiMod_Mask_) == Mods); });
+            if (V.empty()) ImGui::TextDisabled("The mouse does nothing with this button here.");
+            for (const flat_gesture& F : V)
+            {
+                const bool bHere = (F.m_pG->m_Mods & ImGuiMod_Mask_) == Mods;
+                ImGui::TextColored(bHere ? ImVec4(1.0f, 0.82f, 0.35f, 1.0f) : ImVec4(0.65f, 0.65f, 0.70f, 1.0f), "%-26s", GestureText(*F.m_pG).c_str());
+                ImGui::SameLine(); ImGui::Text("%s", F.m_pG->m_pName);
+                ImGui::SameLine(); ImGui::TextDisabled("%s - %s", F.m_pSurface, F.m_pG->m_pHelp);
+            }
+            ImGui::EndChild();
+        }
     }
 
     inline void DrawKeyboardOverlay(context& Ctx)
@@ -296,20 +382,30 @@ namespace ximgui::actions
                                      | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize;
         if (ImGui::Begin("Keyboard##ActionsOverlay", nullptr, Flags))
         {
-            ImGui::TextDisabled("What each key does where you were working. Click Ctrl / Shift / Alt to see their layer; click a key to keep its details below.");
+            ImGui::TextDisabled("What each key and mouse button does where you were working. Click Ctrl / Shift / Alt to see their layer; click a key or a mouse button to keep its details below.");
             details::DrawKeyboardLegend(false);
             ImGui::Dummy(ImVec2(0.0f, 4.0f));
 
+            std::vector<details::flat_gesture> Flat;
+            for (const gesture_set& S : O.m_Gestures) for (const gesture& G : S.m_List) Flat.push_back({ S.m_pSurface, &G });
+
             details::keyboard_args A;
-            A.m_Unit      = std::clamp((pVp->Size.x * 0.9f - 24.0f) / details::k_KeyboardUnitsW, 34.0f, 54.0f);
+            A.m_Unit      = std::clamp((pVp->Size.x * 0.9f - 24.0f) / (details::k_KeyboardUnitsW + 4.4f), 30.0f, 54.0f);
             A.m_bNames    = true;
             A.m_Mods      = Mods;
             A.m_pToggle[0]= &O.m_bCtrl; A.m_pToggle[1] = &O.m_bShift; A.m_pToggle[2] = &O.m_bAlt;
             A.m_pPinned   = &O.m_PinnedKey;
-            const int Hovered = details::DrawKeyboard(ByKey, A);
+            const ImVec2 Origin = ImGui::GetCursorScreenPos();
+            const int HoveredKey = details::DrawKeyboard(ByKey, A);
 
-            ImGui::Dummy(ImVec2(0.0f, 4.0f));
-            details::DrawKeyDetails(Ctx, ByKey, Hovered ? Hovered : O.m_PinnedKey, Mods, 4, nullptr);
+            // The mouse, to the right of the keyboard.
+            ImGui::SetCursorScreenPos(ImVec2(Origin.x + (details::k_KeyboardUnitsW + 1.0f) * A.m_Unit, Origin.y + 0.3f * A.m_Unit));
+            const int HoveredMouse = details::DrawMouse(Flat, Mods, A.m_Unit, &O.m_PinnedKey);
+            ImGui::SetCursorScreenPos(ImVec2(Origin.x, Origin.y + details::k_KeyboardUnitsH * A.m_Unit + 6.0f));
+
+            const int Shown = HoveredKey ? HoveredKey : HoveredMouse ? HoveredMouse : O.m_PinnedKey;
+            if (Shown < 0) details::DrawGestureDetails(Flat, Shown, Mods, 4);
+            else           details::DrawKeyDetails(Ctx, ByKey, Shown, Mods, 4, nullptr);
             ImGui::TextDisabled("F1 or Esc closes.");
 
             // (Not on the frame that opened it: F1 is still down then, and would close it again at once.)
@@ -317,6 +413,57 @@ namespace ximgui::actions
         }
         ImGui::End();
         if (bClose) Ctx.CloseOverlay();
+    }
+
+    //==============================================================================================
+    // The status line: what the mouse can do on the surface it is over, in a quiet strip at the bottom of the window.
+    // Holding Ctrl / Shift / Alt shows that layer. Nothing is drawn over a surface that declares no gestures, or while a view is open.
+    //==============================================================================================
+
+    inline void DrawStatusLine(context& Ctx)
+    {
+        if (Ctx.m_Overlay.m_bOpen || Ctx.m_Palette.m_bOpen) return;
+        const auto Sets = Ctx.GestureOrder(true);
+        if (Sets.empty()) return;
+
+        const ImGuiIO& io = ImGui::GetIO();
+        ImGuiKeyChord Mods = 0;
+        if (io.KeyCtrl)  Mods |= ImGuiMod_Ctrl;
+        if (io.KeyShift) Mods |= ImGuiMod_Shift;
+        if (io.KeyAlt)   Mods |= ImGuiMod_Alt;
+
+        struct item { std::string m_Input, m_Name; };
+        std::vector<item> Items;
+        for (const gesture& G : Sets.front().m_List)
+            if ((G.m_Mods & ImGuiMod_Mask_) == Mods) Items.push_back({ GestureText(G), G.m_pName });
+        if (Items.empty()) return;
+
+        ImGuiViewport* pVp = ImGui::GetMainViewport();
+        ImDrawList*    d   = ImGui::GetForegroundDrawList(pVp);
+        const float    H   = ImGui::GetTextLineHeight() + 10.0f;
+        const float    Max = pVp->Size.x - 24.0f;
+
+        float W = 14.0f + ImGui::CalcTextSize(Sets.front().m_pSurface).x;
+        for (const item& I : Items) W += 18.0f + ImGui::CalcTextSize(I.m_Input.c_str()).x + 6.0f + ImGui::CalcTextSize(I.m_Name.c_str()).x;
+        W = std::min(W + 10.0f, Max);
+
+        const ImVec2 Min(pVp->Pos.x + 12.0f, pVp->Pos.y + pVp->Size.y - H - 8.0f);
+        d->PushClipRect(Min, ImVec2(Min.x + W, Min.y + H), true);
+        d->AddRectFilled(Min, ImVec2(Min.x + W, Min.y + H), IM_COL32(20, 20, 24, 225), 6.0f);
+        d->AddRect(Min, ImVec2(Min.x + W, Min.y + H), IM_COL32(95, 95, 105, 255), 6.0f);
+        float X = Min.x + 10.0f;
+        const float Y = Min.y + 5.0f;
+        d->AddText(ImVec2(X, Y), IM_COL32(150, 152, 160, 255), Sets.front().m_pSurface);
+        X += ImGui::CalcTextSize(Sets.front().m_pSurface).x;
+        for (const item& I : Items)
+        {
+            X += 18.0f;
+            d->AddText(ImVec2(X, Y), IM_COL32(255, 209, 89, 255), I.m_Input.c_str());
+            X += ImGui::CalcTextSize(I.m_Input.c_str()).x + 6.0f;
+            d->AddText(ImVec2(X, Y), IM_COL32(235, 235, 240, 255), I.m_Name.c_str());
+            X += ImGui::CalcTextSize(I.m_Name.c_str()).x;
+        }
+        d->PopClipRect();
     }
 
     //==============================================================================================
@@ -442,6 +589,89 @@ namespace ximgui::actions
     }
 
 
+    namespace details
+    {
+        // What the "Set key" row / the pinned card says while a key is being captured: "press a key", or the clash and its two buttons.
+        inline void DrawCaptureStatus(context& Ctx)
+        {
+            auto& Cap = Ctx.m_Capture;
+            if (!Cap.m_ConflictWith.empty())
+            {
+                ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.38f, 1.0f), "%s is also on %s.", ChordName(Cap.m_Chord).c_str(), Cap.m_ConflictWith.c_str());
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Replace")) Ctx.ResolveClash(true);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Cancel"))  Ctx.ResolveClash(false);
+            }
+            else
+            {
+                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "press a key... (Esc cancels)");
+                Ctx.PollCapture();
+            }
+        }
+    }
+
+    //==============================================================================================
+    // The pinned hint card (F1 over something that has a hint): the card kept on screen, with what can be done to its key.
+    //==============================================================================================
+
+    inline void DrawPinnedCard(context& Ctx)
+    {
+        auto& P = Ctx.m_Pinned;
+        if (!P.m_bOpen) return;
+        const action_info* pA = Ctx.FindByPath(P.m_Path);
+        if (!pA) { Ctx.ClosePinned(); return; }
+
+        // Is it live here, and can it run? (The instance is whatever scope has it right now.)
+        const std::string Why = Ctx.ReasonNow(*pA);
+
+        ImGuiViewport* pVp = ImGui::GetMainViewport();
+        const float    Width = 380.0f;
+        ImGui::SetNextWindowPos(ImVec2(std::clamp(P.m_Pos.x - 12.0f, pVp->Pos.x + 8.0f, pVp->Pos.x + pVp->Size.x - Width - 24.0f)
+                                     , std::clamp(P.m_Pos.y + 14.0f, pVp->Pos.y + 8.0f, pVp->Pos.y + pVp->Size.y - 230.0f)), ImGuiCond_Always);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(Width, 0.0f), ImVec2(Width, pVp->Size.y));
+
+        bool bClose = false;
+        const ImGuiWindowFlags Flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings
+                                     | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize;
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 10.0f));
+        if (ImGui::Begin("##ActionsPinnedCard", nullptr, Flags))
+        {
+            const hint_text H = Ctx.MakeHint(*pA, Why);
+            ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.15f);
+            ImGui::TextUnformatted(H.m_Topic.c_str());
+            ImGui::PopFont();
+            if (!H.m_Shortcut.empty()) { ImGui::SameLine(0.0f, 14.0f); ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.35f, 1.0f), "[%s]", H.m_Shortcut.c_str()); }
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + Width - 24.0f);
+            if (!H.m_Body.empty())     { ImGui::Spacing(); ImGui::TextUnformatted(H.m_Body.c_str()); }
+            if (!H.m_Disabled.empty()) { ImGui::Spacing(); ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.38f, 1.0f), "Unavailable: %s", H.m_Disabled.c_str()); }
+            ImGui::Spacing();
+            ImGui::TextDisabled("%s", H.m_Detail.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::Separator();
+
+            if (Ctx.m_Capture.m_Path == P.m_Path)
+                details::DrawCaptureStatus(Ctx);
+            else
+            {
+                if (ImGui::Button("Change shortcut...")) Ctx.m_Capture.m_Path = P.m_Path;
+                if (Ctx.Chords(*pA) != pA->m_Default) { ImGui::SameLine(); if (ImGui::Button("Reset")) Ctx.ResetKeys(P.m_Path); }
+                ImGui::SameLine();
+                if (ImGui::Button("Copy command")) ImGui::SetClipboardText(("RunAction -Path " + P.m_Path).c_str());
+                if (Ctx.m_OnShowInKeymap) { ImGui::SameLine(); if (ImGui::Button("Show in keymap")) { Ctx.m_OnShowInKeymap(P.m_Path); bClose = true; } }
+                ImGui::SameLine();
+                if (ImGui::Button("Keyboard")) { Ctx.ClosePinned(); Ctx.OpenOverlay(); ImGui::End(); ImGui::PopStyleVar(); return; }
+
+                // Closing: Esc, or a click anywhere else (the first frames are let through: F1 itself opened it).
+                if (ImGui::IsKeyPressed(ImGuiKey_Escape)) bClose = true;
+                if (ImGui::GetFrameCount() > P.m_OpenFrame + 2 && !ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) bClose = true;
+            }
+        }
+        ImGui::End();
+        ImGui::PopStyleVar();
+        if (bClose) Ctx.ClosePinned();
+    }
+
     //==============================================================================================
     // The keymap page: an xproperty object. One row per action (a std::map: path -> keys).
     //==============================================================================================
@@ -500,21 +730,7 @@ namespace ximgui::actions
                     if (ImGui::IsItemHovered()) Self.m_pCtx->ShowHint({ "Reset", "This key was changed from the default. Puts the default back.", "", "", Row });
                 }
             }
-            else
-            {
-                ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f), "press a key... (Esc cancels)");
-                if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) Cap.m_Path.clear();
-                else
-                    for (int k = ImGuiKey_Tab; k <= ImGuiKey_Oem102; ++k)
-                    {
-                        if (k >= ImGuiKey_LeftCtrl && k <= ImGuiKey_RightSuper) continue;     // a modifier alone is not a key
-                        if (!ImGui::IsKeyPressed(static_cast<ImGuiKey>(k), false)) continue;
-                        const ImGuiKeyChord Chord = (static_cast<ImGuiKeyChord>(ImGui::GetIO().KeyMods) & ImGuiMod_Mask_) | k;
-                        Self.m_pCtx->SetKeys(Row, ChordName(Chord));        // a clash shows up in the problems list under the page
-                        Cap.m_Path.clear();
-                        break;
-                    }
-            }
+            else details::DrawCaptureStatus(*Self.m_pCtx);
             ImGui::PopID();
         }
 
@@ -565,6 +781,31 @@ namespace ximgui::actions
             Inspector.clear();
             Inspector.AppendEntity();
             Inspector.AppendEntityComponent(*xproperty::getObjectByType<keymap_page>(), &Page);
+        }
+
+        // Presets: the keymap this one sits on, and my keys saved as a keymap others can use.
+        if (Ctx.m_Presets.m_List)
+        {
+            static char        NameBuf[64]{};
+            static std::string Result;
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("Based on");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::BeginCombo("##base", Ctx.m_Presets.m_Base.empty() ? "(the defaults)" : Ctx.m_Presets.m_Base.c_str()))
+            {
+                if (ImGui::Selectable("(the defaults)", Ctx.m_Presets.m_Base.empty())) Ctx.m_Presets.m_SetBase({});
+                for (const std::string& Name : Ctx.m_Presets.m_List())
+                    if (ImGui::Selectable(Name.c_str(), Name == Ctx.m_Presets.m_Base)) { Ctx.m_Presets.m_SetBase(Name); break; }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine(0.0f, 24.0f);
+            ImGui::SetNextItemWidth(160.0f);
+            ImGui::InputTextWithHint("##presetname", "name of a new keymap", NameBuf, sizeof(NameBuf));
+            ImGui::SameLine();
+            if (ImGui::Button("Save my keys as it")) { Result = Ctx.m_Presets.m_SaveAs(NameBuf); if (Result.empty()) { Result = std::string("saved as ") + NameBuf; NameBuf[0] = 0; } }
+            if (ImGui::IsItemHovered()) Ctx.ShowHint({ "Save my keys as a keymap", "Writes every key you have changed (and the toolbars) as a keymap file of that name in the project. Anyone can choose it in Based on, and it travels with the project.", "", "", "" });
+            if (!Result.empty()) ImGui::TextDisabled("%s", Result.c_str());
         }
 
         ImGui::TextWrapped("Keys of every editor, one section each. Edit a value, or click 'Set key' and press the new key. A marked row differs from the default; its button puts the default back. Saved in your own keymap file.");
