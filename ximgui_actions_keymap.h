@@ -104,6 +104,21 @@ namespace ximgui::actions
             for (auto& B : It->m_Bindings) Ctx.m_Overrides[B.m_Path] = Ctx.ParseChecked(B.m_Keys, std::format("keymap binding '{}'", B.m_Path));
             for (auto& T : It->m_Toolbars) Ctx.m_Toolbars[T.m_Name] = T.m_Items;
         }
+
+        // Editing on the keymap page changes only this person's own file (the first of the chain), then everything is layered again.
+        if (!UserName.empty() && !Chain.empty())
+        {
+            Ctx.m_OnBindingChange = [Dir, UserName, User = Chain.front()](context& C, const std::string& Path, const std::string& Keys, bool bReset) mutable
+            {
+                (void)LoadKeymap(Dir, UserName, User);          // pick up edits made by hand since
+                std::erase_if(User.m_Bindings, [&](const keymap_binding& B) { return B.m_Path == Path; });
+                if (!bReset) User.m_Bindings.push_back({ Path, Keys });
+                if (auto Err = SaveKeymap(Dir, UserName, User); Err)
+                    C.Problem(std::format("keymap '{}' could not be saved: {}", UserName, Err.getMessage()));
+                const std::wstring D = Dir; const std::string U = UserName;       // this closure is replaced by the call below: copy first
+                ApplyKeymapLayers(C, D, U);                                          // re-layers and re-installs this hook
+            };
+        }
     }
 }
 

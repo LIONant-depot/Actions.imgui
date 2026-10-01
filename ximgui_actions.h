@@ -23,6 +23,7 @@
 //              after the panels:               Ctx.EndFrame();
 
 #include <algorithm>
+#include <functional>
 #include <format>
 #include <cctype>
 #include <functional>
@@ -138,6 +139,7 @@ namespace ximgui::actions
         const xproperty::type::members* m_pMember = nullptr;
         std::vector<ImGuiKeyChord>      m_Default;
         bool                            m_bInText = false;
+        const xproperty::type::object*  m_pObject = nullptr;
     };
 
     struct scope_entry
@@ -240,6 +242,89 @@ namespace ximgui::actions
         std::unordered_map<std::string, std::vector<std::string>>   m_Toolbars;
 
         //------------------------------------------------------------------------------------------
+        // UI state (drawn by ximgui_actions_ui.h: the command palette and the keymap page)
+        //------------------------------------------------------------------------------------------
+
+        struct palette_state
+        {
+            bool                     m_bOpen      = false;
+            bool                     m_bFocus     = false;       // put the keyboard in the search box (the frame it opens)
+            int                      m_OpenFrame  = 0;
+            int                      m_Selected   = 0;
+            std::string              m_Query;
+            ImGuiWindow*             m_pPrevFocus = nullptr;     // the window that had the focus when it opened (gets it back)
+            std::vector<scope_entry> m_Order;                    // what was live THEN: the palette itself takes the focus
+        } m_Palette;
+
+        struct capture_state
+        {
+            std::string   m_Path;                                // the action whose key is being captured ("" = not capturing)
+            ImGuiKeyChord m_Chord = 0;                           // a captured chord that another action already has...
+            std::string   m_ConflictWith;                        // ...and that action's path (waiting for Replace / Cancel)
+        } m_Capture;
+
+        // A person edited a binding on the keymap page: Path, the new keys ("" = unbound), or bReset (back to the layer below).
+        // The keymap layers install this; without it the edit only lives in m_Overrides.
+        std::function<void(context&, const std::string&, const std::string&, bool)> m_OnBindingChange;
+
+        // The host's own search box (xeditor::RenderTreeSearchBar), so the palette looks like every other search field. Text, width,
+        // "put the keyboard in it"; true when the text changed. Without one the palette uses a plain ImGui input.
+        bool (*m_pSearchBox)(std::string&, float, bool) noexcept = nullptr;
+
+        bool IsCapturing() const noexcept { return !m_Capture.m_Path.empty(); }
+
+        // Opens the palette (or closes it when it is open) over what is live in the window that has the focus.
+        void OpenPalette()
+        {
+            if (m_Palette.m_bOpen) { ClosePalette(); return; }
+            m_Palette = {};
+            m_Palette.m_bOpen     = true;
+            m_Palette.m_bFocus    = true;
+            m_Palette.m_OpenFrame = ImGui::GetFrameCount();
+            if (ImGuiContext* g = ImGui::GetCurrentContext(); g) m_Palette.m_pPrevFocus = g->NavWindow;
+            auto Order = FocusOrder();
+            if (Order.empty()) Order = AllEntries();
+            for (const scope_entry* p : Order) m_Palette.m_Order.push_back(*p);
+        }
+
+        void ClosePalette()
+        {
+            if (m_Palette.m_pPrevFocus) ImGui::FocusWindow(m_Palette.m_pPrevFocus);
+            m_Palette = {};
+        }
+
+        const std::unordered_map<const xproperty::type::object*, std::vector<action_info>>& Types() const noexcept { return m_Types; }
+
+        // Another action of the same object and scope that already has this chord (it could never be reached next to A).
+        const action_info* FindConflict(const action_info& A, ImGuiKeyChord C)
+        {
+            for (auto& B : Actions(*A.m_pObject))
+            {
+                if (&B == &A || B.m_Scope != A.m_Scope) continue;
+                for (const ImGuiKeyChord X : Chords(B)) if (X == C) return &B;
+            }
+            return nullptr;
+        }
+
+        // Is A live for this scope entry and visible?
+        bool Live(const scope_entry& E, const action_info& A) { return IsLive(E, A) && !Hidden(A, E.m_pInstance); }
+
+        // Run it at the start of the next frame (what menus, buttons and the palette do).
+        void Queue(const action_info& A, void* pInstance) { m_Pending.push_back({ &A, pInstance }); }
+
+        void SetKeys(const std::string& Path, const std::string& Keys)
+        {
+            m_Overrides[Path] = ParseChecked(Keys, "keymap page");
+            if (m_OnBindingChange) m_OnBindingChange(*this, Path, Keys, false);
+        }
+
+        void ResetKeys(const std::string& Path)
+        {
+            if (m_OnBindingChange) m_OnBindingChange(*this, Path, {}, true);
+            else                   m_Overrides.erase(Path);
+        }
+
+        //------------------------------------------------------------------------------------------
         // Index
         //------------------------------------------------------------------------------------------
 
@@ -249,7 +334,7 @@ namespace ximgui::actions
             if (It != m_Types.end()) return It->second;
 
             std::vector<action_info> Out;
-            Walk(Obj.m_pName, std::string{}, static_cast<const xproperty::type::members::scope&>(Obj), Out);
+            Walk(Obj, std::string{}, static_cast<const xproperty::type::members::scope&>(Obj), Out);
             return m_Types.emplace(&Obj, std::move(Out)).first->second;
         }
 
@@ -344,6 +429,7 @@ namespace ximgui::actions
         void NewFrame()
         {
             RunPending();
+            if (IsCapturing()) return;          // the keymap page is listening for a key: it must not run an action
 
             const ImGuiIO& io = ImGui::GetIO();
             if (ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) return;
@@ -505,6 +591,9 @@ namespace ximgui::actions
             return false;
         }
 
+        // The hint card of an action, without asking whether it can run (the keymap page does not know the instance).
+        void HintCard(const action_info& A) { DrawCard(A, nullptr, std::string{}, KeysText(A)); }
+
         // The actions chosen from menus/buttons this frame run here (outside every menu), once, in order.
         void RunPending()
         {
@@ -529,13 +618,14 @@ namespace ximgui::actions
             return E;
         }
 
-        void Walk(std::string_view ObjName, const std::string& Scope, const xproperty::type::members::scope& S, std::vector<action_info>& Out)
+        void Walk(const xproperty::type::object& Obj, const std::string& Scope, const xproperty::type::members::scope& S, std::vector<action_info>& Out)
         {
+            const std::string_view ObjName = Obj.m_pName;
             for (const auto& M : S.m_Members)
             {
                 if (const auto* pScope = std::get_if<xproperty::type::members::scope>(&M.m_Variant))
                 {
-                    Walk(ObjName, Scope.empty() ? std::string(M.m_pName) : Scope + "/" + M.m_pName, *pScope, Out);
+                    Walk(Obj, Scope.empty() ? std::string(M.m_pName) : Scope + "/" + M.m_pName, *pScope, Out);
                 }
                 else if (std::holds_alternative<xproperty::type::members::function>(M.m_Variant))
                 {
@@ -544,6 +634,7 @@ namespace ximgui::actions
                     A.m_Path    = std::string(ObjName) + "/" + (Scope.empty() ? "" : Scope + "/") + M.m_pName;
                     A.m_pName   = M.m_pName;
                     A.m_pMember = &M;
+                    A.m_pObject = &Obj;
                     if (auto* H = M.getUserData<xproperty::settings::member_help_t>(); H) A.m_pHelp = H->m_pHelp;
                     if (auto* K = M.getUserData<member_keys_t>(); K) { A.m_Default = ParseChords(K->m_pKeys); A.m_bInText = K->m_bInText; }
                     Out.push_back(std::move(A));
