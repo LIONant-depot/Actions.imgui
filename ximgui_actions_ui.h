@@ -80,10 +80,11 @@ namespace ximgui::actions
         inline constexpr ImVec4 k_ColMixed      { 0.62f, 0.52f, 0.63f, 1.0f };
         inline constexpr ImVec4 k_ColModifierOn { 0.38f, 0.65f, 0.51f, 1.0f };
         inline constexpr ImVec4 k_ColModifierOff{ 0.21f, 0.21f, 0.23f, 1.0f };
+        inline ImU32 Rim(const ImVec4& Face) noexcept { return ImGui::ColorConvertFloat4ToU32(ImVec4(Face.x * 0.55f, Face.y * 0.55f, Face.z * 0.55f, 1.0f)); }
+
         inline constexpr ImU32  k_InkOnLight    = IM_COL32(247, 248, 251, 245);
         inline constexpr ImU32  k_InkOnDark     = IM_COL32(205, 205, 212, 255);
         inline constexpr ImU32  k_InkName       = IM_COL32(247, 248, 251, 215);              // the action's name on a key or a button
-        inline constexpr ImU32  k_Outline       = IM_COL32(86, 86, 94, 255);
 
         struct key_entry { ImGuiKeyChord m_Chord; const action_info* m_pA; std::string m_Why; bool m_bGlobal; };
         using keys_by_key = std::unordered_map<int, std::vector<key_entry>>;
@@ -350,7 +351,9 @@ namespace ximgui::actions
             // The body, then the two buttons cut out of a slightly smaller copy of it (so the body shows as a thin rim round them).
             const auto Body = MouseOutline(Center, Half, H * 0.5f);
             const auto Face = MouseOutline(Center, Half, H * 0.5f, 0.93f);
-            d->AddConvexPolyFilled(Body.data(), static_cast<int>(Body.size()), ImGui::ColorConvertFloat4ToU32(k_ColUnassigned));       // the colour of a key with nothing on it
+            d->AddConvexPolyFilled(Body.data(), static_cast<int>(Body.size()), Rim(k_ColUnassigned));                               // the rim, like a key's
+            const auto BodyFace = MouseOutline(Center, Half - 2.5f, H * 0.5f - 2.5f);
+            d->AddConvexPolyFilled(BodyFace.data(), static_cast<int>(BodyFace.size()), ImGui::ColorConvertFloat4ToU32(k_ColUnassigned));       // the colour of a key with nothing on it
 
             const float GapHalf = 0.3f * U;                                                  // half the space between the buttons: the wheel lives there
             struct region { int m_Id; ImVec2 m_Min, m_Max; const char* m_pLabel; };
@@ -390,7 +393,7 @@ namespace ximgui::actions
                 if (R.m_Id == -3)                                                            // the wheel: a pill
                 {
                     d->AddRectFilled(R.m_Min, R.m_Max, Fill, 0.2f * U);
-                    d->AddRect(R.m_Min, R.m_Max, bPinned ? IM_COL32(235, 235, 240, 255) : k_Outline, 0.2f * U, 0, bPinned ? 1.5f : 1.0f);
+                    d->AddRect(R.m_Min, R.m_Max, bPinned ? IM_COL32(235, 235, 240, 255) : Rim(Color), 0.2f * U, 0, bPinned ? 1.5f : 2.0f);
                     if (bOther) d->AddTriangleFilled(ImVec2(R.m_Max.x - 8.0f, R.m_Min.y + 1.0f), ImVec2(R.m_Max.x - 1.0f, R.m_Min.y + 1.0f), ImVec2(R.m_Max.x - 1.0f, R.m_Min.y + 8.0f), IM_COL32(190, 150, 215, 255));
                     if (pName)                                                               // its names go under the buttons, centred
                     {
@@ -407,7 +410,7 @@ namespace ximgui::actions
                 if (Poly.size() >= 3)
                 {
                     d->AddConvexPolyFilled(Poly.data(), static_cast<int>(Poly.size()), Fill);
-                    d->AddPolyline(Poly.data(), static_cast<int>(Poly.size()), bPinned ? IM_COL32(235, 235, 240, 255) : k_Outline, ImDrawFlags_Closed, bPinned ? 1.5f : 1.0f);
+                    d->AddPolyline(Poly.data(), static_cast<int>(Poly.size()), bPinned ? IM_COL32(235, 235, 240, 255) : Rim(Color), ImDrawFlags_Closed, bPinned ? 1.5f : 2.0f);
                 }
                 const float TextX = (R.m_Id == -1 ? R.m_Min.x + 0.55f * U : R.m_Min.x + 0.2f * U);
                 d->AddText(pFont, ImGui::GetFontSize(), ImVec2(TextX, R.m_Min.y + 0.55f * U), bHere ? k_InkOnLight : k_InkOnDark, R.m_pLabel);
@@ -418,7 +421,6 @@ namespace ximgui::actions
                 if (bOther) d->AddTriangleFilled(ImVec2(R.m_Max.x - 12.0f, R.m_Min.y + 0.6f * U), ImVec2(R.m_Max.x - 4.0f, R.m_Min.y + 0.6f * U), ImVec2(R.m_Max.x - 4.0f, R.m_Min.y + 0.6f * U + 8.0f), IM_COL32(190, 150, 215, 255));
             }
 
-            d->AddPolyline(Body.data(), static_cast<int>(Body.size()), k_Outline, ImDrawFlags_Closed, 1.5f);
             ImGui::SetCursorScreenPos(O);
             ImGui::Dummy(ImVec2(W, H));
             return Hovered;
