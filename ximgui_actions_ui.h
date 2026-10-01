@@ -60,6 +60,266 @@ namespace ximgui::actions
     }
 
     //==============================================================================================
+    // The keyboard: the keys drawn as a keyboard, coloured by what is on them where the person was working.
+    //   dark = nothing   blue = an action   tan = a host-wide action   mauve = both     (these describe the modifier layer being shown)
+    //   a small corner mark = the key does more with other modifiers held
+    //   a gold ring = the keys of the action the palette has selected
+    // Ctrl / Shift / Alt are on the keyboard too: click them (or hold them) to see that layer. The name of the action is on its key.
+    // The strip under the keyboard says what is on the key under the mouse (or on the key that was clicked, which keeps it).
+    //
+    // One widget, two homes: the F1 overlay, and the keyboard under the palette (Ctrl+Shift+P), where it follows the selected row.
+    //==============================================================================================
+
+    namespace details
+    {
+        struct key_entry { ImGuiKeyChord m_Chord; const action_info* m_pA; std::string m_Why; bool m_bGlobal; };
+        using keys_by_key = std::unordered_map<int, std::vector<key_entry>>;
+
+        // Every chord of every action that is live in Order, by the key it ends with.
+        inline keys_by_key KeysOf(context& Ctx, const std::vector<scope_entry>& Order)
+        {
+            keys_by_key ByKey;
+            for (const scope_entry& E : Order)
+                for (const action_info& A : Ctx.Actions(*E.m_pObject))
+                {
+                    if (!Ctx.Live(E, A)) continue;
+                    const std::string Why = Ctx.Reason(A, E.m_pInstance);
+                    for (const ImGuiKeyChord C : Ctx.Chords(A))
+                    {
+                        auto& V = ByKey[static_cast<int>(C & ~ImGuiMod_Mask_)];
+                        if (std::none_of(V.begin(), V.end(), [&](const key_entry& X) { return X.m_Chord == C && X.m_pA == &A; })) V.push_back({ C, &A, Why, E.m_bGlobal });
+                    }
+                }
+            return ByKey;
+        }
+
+        struct keyboard_args
+        {
+            float                               m_Unit      = 40.0f;        // the size of a 1.0 key
+            bool                                m_bNames    = false;        // the name of the action on its key
+            ImGuiKeyChord                       m_Mods      = 0;            // the modifier layer shown
+            bool*                               m_pToggle[3]= {};           // Ctrl, Shift, Alt: clicking those keys flips these (null = just displayed)
+            const std::vector<ImGuiKeyChord>*   m_pHighlight= nullptr;      // chords whose key gets the gold ring
+            int*                                m_pPinned   = nullptr;      // the key that was clicked (an ImGuiKey; 0 = none)
+        };
+
+        inline constexpr float k_KeyboardUnitsW = 18.5f;
+        inline constexpr float k_KeyboardUnitsH = 6.4f;
+
+        // Draws the keyboard at the cursor. Returns the ImGuiKey under the mouse (0 = none).
+        inline int DrawKeyboard(const keys_by_key& ByKey, const keyboard_args& A)
+        {
+            struct key { const char* m_pLabel; ImGuiKey m_Key; float m_X, m_Y, m_W; ImGuiKeyChord m_Mod = 0; };
+            static const key Keys[] =
+            { {"Esc", ImGuiKey_Escape, 0, 0, 1}
+            , {"F1", ImGuiKey_F1, 2, 0, 1}, {"F2", ImGuiKey_F2, 3, 0, 1}, {"F3", ImGuiKey_F3, 4, 0, 1}, {"F4", ImGuiKey_F4, 5, 0, 1}
+            , {"F5", ImGuiKey_F5, 6.5f, 0, 1}, {"F6", ImGuiKey_F6, 7.5f, 0, 1}, {"F7", ImGuiKey_F7, 8.5f, 0, 1}, {"F8", ImGuiKey_F8, 9.5f, 0, 1}
+            , {"F9", ImGuiKey_F9, 11, 0, 1}, {"F10", ImGuiKey_F10, 12, 0, 1}, {"F11", ImGuiKey_F11, 13, 0, 1}, {"F12", ImGuiKey_F12, 14, 0, 1}
+            , {"`", ImGuiKey_GraveAccent, 0, 1.4f, 1}
+            , {"1", ImGuiKey_1, 1, 1.4f, 1}, {"2", ImGuiKey_2, 2, 1.4f, 1}, {"3", ImGuiKey_3, 3, 1.4f, 1}, {"4", ImGuiKey_4, 4, 1.4f, 1}, {"5", ImGuiKey_5, 5, 1.4f, 1}
+            , {"6", ImGuiKey_6, 6, 1.4f, 1}, {"7", ImGuiKey_7, 7, 1.4f, 1}, {"8", ImGuiKey_8, 8, 1.4f, 1}, {"9", ImGuiKey_9, 9, 1.4f, 1}, {"0", ImGuiKey_0, 10, 1.4f, 1}
+            , {"-", ImGuiKey_Minus, 11, 1.4f, 1}, {"=", ImGuiKey_Equal, 12, 1.4f, 1}, {"Bksp", ImGuiKey_Backspace, 13, 1.4f, 2}
+            , {"Tab", ImGuiKey_Tab, 0, 2.4f, 1.5f}
+            , {"Q", ImGuiKey_Q, 1.5f, 2.4f, 1}, {"W", ImGuiKey_W, 2.5f, 2.4f, 1}, {"E", ImGuiKey_E, 3.5f, 2.4f, 1}, {"R", ImGuiKey_R, 4.5f, 2.4f, 1}, {"T", ImGuiKey_T, 5.5f, 2.4f, 1}
+            , {"Y", ImGuiKey_Y, 6.5f, 2.4f, 1}, {"U", ImGuiKey_U, 7.5f, 2.4f, 1}, {"I", ImGuiKey_I, 8.5f, 2.4f, 1}, {"O", ImGuiKey_O, 9.5f, 2.4f, 1}, {"P", ImGuiKey_P, 10.5f, 2.4f, 1}
+            , {"[", ImGuiKey_LeftBracket, 11.5f, 2.4f, 1}, {"]", ImGuiKey_RightBracket, 12.5f, 2.4f, 1}, {"\\", ImGuiKey_Backslash, 13.5f, 2.4f, 1.5f}
+            , {"Caps", ImGuiKey_CapsLock, 0, 3.4f, 1.8f}
+            , {"A", ImGuiKey_A, 1.8f, 3.4f, 1}, {"S", ImGuiKey_S, 2.8f, 3.4f, 1}, {"D", ImGuiKey_D, 3.8f, 3.4f, 1}, {"F", ImGuiKey_F, 4.8f, 3.4f, 1}, {"G", ImGuiKey_G, 5.8f, 3.4f, 1}
+            , {"H", ImGuiKey_H, 6.8f, 3.4f, 1}, {"J", ImGuiKey_J, 7.8f, 3.4f, 1}, {"K", ImGuiKey_K, 8.8f, 3.4f, 1}, {"L", ImGuiKey_L, 9.8f, 3.4f, 1}
+            , {";", ImGuiKey_Semicolon, 10.8f, 3.4f, 1}, {"'", ImGuiKey_Apostrophe, 11.8f, 3.4f, 1}, {"Enter", ImGuiKey_Enter, 12.8f, 3.4f, 2.2f}
+            , {"Shift", ImGuiKey_None, 0, 4.4f, 2.3f, ImGuiMod_Shift}
+            , {"Z", ImGuiKey_Z, 2.3f, 4.4f, 1}, {"X", ImGuiKey_X, 3.3f, 4.4f, 1}, {"C", ImGuiKey_C, 4.3f, 4.4f, 1}, {"V", ImGuiKey_V, 5.3f, 4.4f, 1}, {"B", ImGuiKey_B, 6.3f, 4.4f, 1}
+            , {"N", ImGuiKey_N, 7.3f, 4.4f, 1}, {"M", ImGuiKey_M, 8.3f, 4.4f, 1}, {",", ImGuiKey_Comma, 9.3f, 4.4f, 1}, {".", ImGuiKey_Period, 10.3f, 4.4f, 1}, {"/", ImGuiKey_Slash, 11.3f, 4.4f, 1}
+            , {"Shift", ImGuiKey_None, 12.3f, 4.4f, 2.7f, ImGuiMod_Shift}
+            , {"Ctrl", ImGuiKey_None, 0, 5.4f, 1.5f, ImGuiMod_Ctrl}, {"Alt", ImGuiKey_None, 1.6f, 5.4f, 1.5f, ImGuiMod_Alt}
+            , {"Space", ImGuiKey_Space, 3.2f, 5.4f, 6.7f}
+            , {"Alt", ImGuiKey_None, 10.0f, 5.4f, 1.5f, ImGuiMod_Alt}, {"Ctrl", ImGuiKey_None, 11.6f, 5.4f, 1.5f, ImGuiMod_Ctrl}
+            , {"Ins", ImGuiKey_Insert, 15.5f, 1.4f, 1}, {"Home", ImGuiKey_Home, 16.5f, 1.4f, 1}, {"PgUp", ImGuiKey_PageUp, 17.5f, 1.4f, 1}
+            , {"Del", ImGuiKey_Delete, 15.5f, 2.4f, 1}, {"End", ImGuiKey_End, 16.5f, 2.4f, 1}, {"PgDn", ImGuiKey_PageDown, 17.5f, 2.4f, 1}
+            , {"Up", ImGuiKey_UpArrow, 16.5f, 4.4f, 1}
+            , {"Left", ImGuiKey_LeftArrow, 15.5f, 5.4f, 1}, {"Down", ImGuiKey_DownArrow, 16.5f, 5.4f, 1}, {"Right", ImGuiKey_RightArrow, 17.5f, 5.4f, 1}
+            };
+
+            const float  U      = A.m_Unit;
+            const ImVec2 Origin = ImGui::GetCursorScreenPos();
+            ImDrawList*  pList  = ImGui::GetWindowDrawList();
+            ImFont*      pFont  = ImGui::GetFont();
+            const float  Big    = ImGui::GetFontSize();
+            const float  Small  = Big * 0.78f;
+            int          Hovered = 0;
+
+            for (const key& K : Keys)
+            {
+                const ImVec2 Min(Origin.x + K.m_X * U, Origin.y + K.m_Y * U);
+                const ImVec2 Max(Min.x + K.m_W * U - 3.0f, Min.y + U - 3.0f);
+
+                // What is on this key in the layer shown (and whether more is on it in the others).
+                bool bAssigned = false, bGlobal = false, bOther = false;
+                const key_entry* pFirst = nullptr;
+                const auto It = (K.m_Mod == 0) ? ByKey.find(static_cast<int>(K.m_Key)) : ByKey.end();
+                if (It != ByKey.end())
+                    for (const key_entry& E : It->second)
+                    {
+                        if ((E.m_Chord & ImGuiMod_Mask_) == A.m_Mods) { (E.m_bGlobal ? bGlobal : bAssigned) = true; if (!pFirst || (!E.m_bGlobal && pFirst->m_bGlobal)) pFirst = &E; }
+                        else                                          bOther = true;
+                    }
+
+                ImVec4 Color(0.25f, 0.25f, 0.28f, 1.0f);                                         // nothing
+                if      (bAssigned && bGlobal) Color = ImVec4(0.55f, 0.45f, 0.55f, 1.0f);       // both
+                else if (bAssigned)            Color = ImVec4(0.32f, 0.50f, 0.78f, 1.0f);       // an action
+                else if (bGlobal)              Color = ImVec4(0.72f, 0.58f, 0.45f, 1.0f);       // host-wide
+                const bool bModKey = K.m_Mod != 0;
+                const bool bOn     = bModKey && (A.m_Mods & K.m_Mod) != 0;
+                if (bModKey) Color = bOn ? ImVec4(0.30f, 0.62f, 0.45f, 1.0f) : ImVec4(0.17f, 0.17f, 0.19f, 1.0f);
+
+                ImGui::SetCursorScreenPos(Min);
+                ImGui::PushID(&K);
+                ImGui::InvisibleButton("##key", ImVec2(Max.x - Min.x, Max.y - Min.y));
+                ImGui::PopID();
+                const bool bHover = ImGui::IsItemHovered();
+                if (bHover) { Hovered = bModKey ? 0 : static_cast<int>(K.m_Key); Color = ImVec4(Color.x + 0.08f, Color.y + 0.08f, Color.z + 0.08f, 1.0f); }
+                if (ImGui::IsItemClicked())
+                {
+                    if (bModKey) { for (int m = 0; m < 3; ++m) if (A.m_pToggle[m] && K.m_Mod == (m == 0 ? ImGuiMod_Ctrl : m == 1 ? ImGuiMod_Shift : ImGuiMod_Alt)) *A.m_pToggle[m] = !*A.m_pToggle[m]; }
+                    else if (A.m_pPinned)  *A.m_pPinned = (*A.m_pPinned == static_cast<int>(K.m_Key)) ? 0 : static_cast<int>(K.m_Key);
+                }
+
+                // The keycap: an outline, a dark rim (the side of the key, thicker at the bottom) and the face on top.
+                pList->AddRectFilled(Min, Max, IM_COL32(12, 12, 14, 255), 5.0f);
+                pList->AddRectFilled(ImVec2(Min.x + 2.0f, Min.y + 2.0f), ImVec2(Max.x - 2.0f, Max.y - 4.0f), ImGui::ColorConvertFloat4ToU32(Color), 4.0f);
+                pList->AddRect(Min, Max, IM_COL32(112, 112, 124, 255), 5.0f);
+                if (A.m_pPinned && !bModKey && *A.m_pPinned == static_cast<int>(K.m_Key)) pList->AddRect(Min, Max, IM_COL32(235, 235, 240, 255), 4.0f, 0, 1.5f);
+
+                if (A.m_pHighlight)
+                    for (const ImGuiKeyChord C : *A.m_pHighlight)
+                        if (!bModKey && static_cast<int>(C & ~ImGuiMod_Mask_) == static_cast<int>(K.m_Key))
+                            pList->AddRect(Min, Max, IM_COL32(255, 205, 70, 255), 4.0f, 0, 2.5f);
+
+                // The label (top left), the action's name (below it), the corner mark.
+                const ImU32 Ink = bAssigned || bGlobal || bOn ? IM_COL32(255, 255, 255, 255) : IM_COL32(205, 205, 212, 255);
+                pList->AddText(pFont, Big, ImVec2(Min.x + 5.0f, Min.y + 3.0f), Ink, K.m_pLabel);
+                if (A.m_bNames && pFirst)
+                {
+                    const std::string& Path = pFirst->m_pA->m_Path;
+                    const std::string  Name = Path.substr(Path.rfind('/') + 1);
+                    pList->PushClipRect(Min, Max, true);
+                    pList->AddText(pFont, Small, ImVec2(Min.x + 5.0f, Min.y + U * 0.5f), IM_COL32(255, 255, 255, 235), Name.c_str());
+                    pList->PopClipRect();
+                }
+                if (bOther)
+                {
+                    pList->AddTriangleFilled(ImVec2(Max.x - 9.0f, Min.y + 1.0f), ImVec2(Max.x - 1.0f, Min.y + 1.0f), ImVec2(Max.x - 1.0f, Min.y + 9.0f), IM_COL32(190, 150, 215, 255));
+                }
+            }
+
+            ImGui::SetCursorScreenPos(Origin);
+            ImGui::Dummy(ImVec2(k_KeyboardUnitsW * U, k_KeyboardUnitsH * U));
+            return Hovered;
+        }
+
+        // The legend, drawn with the same colours as the keys. bSelected: the palette's gold ring is explained too.
+        inline void DrawKeyboardLegend(bool bSelected)
+        {
+            enum shape { box, corner, ring };
+            struct swatch { ImVec4 m_Color; const char* m_pText; shape m_Shape; };
+            const swatch Legend[] = { { ImVec4(0.32f, 0.50f, 0.78f, 1), "action", box }, { ImVec4(0.72f, 0.58f, 0.45f, 1), "host-wide", box }
+                                    , { ImVec4(0.55f, 0.45f, 0.55f, 1), "both", box }, { ImVec4(0.75f, 0.59f, 0.84f, 1), "more with other modifiers", corner }
+                                    , { ImVec4(0.30f, 0.62f, 0.45f, 1), "modifier on", box }, { ImVec4(1.0f, 0.80f, 0.27f, 1), "selected", ring } };
+            const float H = ImGui::GetTextLineHeight();
+            for (const swatch& L : Legend)
+            {
+                if (L.m_Shape == ring && !bSelected) continue;
+                const ImVec2 P = ImGui::GetCursorScreenPos();
+                ImDrawList*  d = ImGui::GetWindowDrawList();
+                const ImU32  C = ImGui::ColorConvertFloat4ToU32(L.m_Color);
+                if      (L.m_Shape == corner) d->AddTriangleFilled(ImVec2(P.x, P.y + 2.0f), ImVec2(P.x + H - 4.0f, P.y + 2.0f), ImVec2(P.x + H - 4.0f, P.y + H - 2.0f), C);
+                else if (L.m_Shape == ring)   d->AddRect(ImVec2(P.x, P.y + 2.0f), ImVec2(P.x + H - 4.0f, P.y + H - 2.0f), C, 2.0f, 0, 2.0f);
+                else                          d->AddRectFilled(ImVec2(P.x, P.y + 2.0f), ImVec2(P.x + H - 4.0f, P.y + H - 2.0f), C, 2.0f);
+                ImGui::Dummy(ImVec2(H - 4.0f, H));
+                ImGui::SameLine(0, 5.0f);
+                ImGui::TextDisabled("%s", L.m_pText);
+                ImGui::SameLine(0, 14.0f);
+            }
+            ImGui::NewLine();
+        }
+
+        // The strip under the keyboard: everything on one key (the layer shown first); with no key, the fallback action's own line.
+        inline void DrawKeyDetails(context& Ctx, const keys_by_key& ByKey, int Key, ImGuiKeyChord Mods, int Lines, const action_info* pFallback)
+        {
+            if (!ImGui::BeginChild("##keydetails", ImVec2(0.0f, ImGui::GetTextLineHeightWithSpacing() * static_cast<float>(Lines) + 6.0f), ImGuiChildFlags_Borders)) { ImGui::EndChild(); return; }
+            const auto It = (Key != 0) ? ByKey.find(Key) : ByKey.end();
+            if (It != ByKey.end())
+            {
+                auto V = It->second;
+                std::sort(V.begin(), V.end(), [&](const key_entry& L, const key_entry& R)
+                    { const bool a = (L.m_Chord & ImGuiMod_Mask_) == Mods, b = (R.m_Chord & ImGuiMod_Mask_) == Mods; return a != b ? a : (L.m_Chord & ImGuiMod_Mask_) < (R.m_Chord & ImGuiMod_Mask_); });
+                for (const key_entry& E : V)
+                {
+                    const bool bHere = (E.m_Chord & ImGuiMod_Mask_) == Mods;
+                    ImGui::TextColored(bHere ? ImVec4(1.0f, 0.82f, 0.35f, 1.0f) : ImVec4(0.65f, 0.65f, 0.70f, 1.0f), "%-18s", ChordName(E.m_Chord).c_str());
+                    ImGui::SameLine();
+                    ImGui::TextUnformatted(E.m_pA->m_Path.c_str());
+                    if (!E.m_Why.empty()) { ImGui::SameLine(); ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.38f, 1.0f), "- %s", E.m_Why.c_str()); }
+                    else if (E.m_pA->m_pHelp) { ImGui::SameLine(); ImGui::TextDisabled("%s", E.m_pA->m_pHelp); }
+                }
+            }
+            else if (Key != 0) ImGui::TextDisabled("Nothing is bound to this key here.");
+            else if (pFallback)
+            {
+                ImGui::TextUnformatted(pFallback->m_Path.c_str());
+                if (pFallback->m_pHelp) ImGui::TextDisabled("%s", pFallback->m_pHelp);
+                const std::string K = Ctx.KeysText(*pFallback);
+                ImGui::TextDisabled("%s", K.empty() ? "no key" : K.c_str());
+            }
+            else ImGui::TextDisabled("Hover a key to see what is on it. Click a key to keep it here.");
+            ImGui::EndChild();
+        }
+    }
+
+    inline void DrawKeyboardOverlay(context& Ctx)
+    {
+        auto& O = Ctx.m_Overlay;
+        if (!O.m_bOpen) return;
+
+        const auto ByKey = details::KeysOf(Ctx, O.m_Order);
+
+        const ImGuiIO& io = ImGui::GetIO();
+        ImGuiKeyChord Mods = 0;
+        if (O.m_bCtrl  || io.KeyCtrl)  Mods |= ImGuiMod_Ctrl;
+        if (O.m_bShift || io.KeyShift) Mods |= ImGuiMod_Shift;
+        if (O.m_bAlt   || io.KeyAlt)   Mods |= ImGuiMod_Alt;
+
+        ImGuiViewport* pVp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(pVp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        bool bClose = false;
+        const ImGuiWindowFlags Flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings
+                                     | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize;
+        if (ImGui::Begin("Keyboard##ActionsOverlay", nullptr, Flags))
+        {
+            ImGui::TextDisabled("What each key does where you were working. Click Ctrl / Shift / Alt to see their layer; click a key to keep its details below.");
+            details::DrawKeyboardLegend(false);
+            ImGui::Dummy(ImVec2(0.0f, 4.0f));
+
+            details::keyboard_args A;
+            A.m_Unit      = std::clamp((pVp->Size.x * 0.9f - 24.0f) / details::k_KeyboardUnitsW, 34.0f, 54.0f);
+            A.m_bNames    = true;
+            A.m_Mods      = Mods;
+            A.m_pToggle[0]= &O.m_bCtrl; A.m_pToggle[1] = &O.m_bShift; A.m_pToggle[2] = &O.m_bAlt;
+            A.m_pPinned   = &O.m_PinnedKey;
+            const int Hovered = details::DrawKeyboard(ByKey, A);
+
+            ImGui::Dummy(ImVec2(0.0f, 4.0f));
+            details::DrawKeyDetails(Ctx, ByKey, Hovered ? Hovered : O.m_PinnedKey, Mods, 4, nullptr);
+            ImGui::TextDisabled("F1 or Esc closes.");
+
+            // (Not on the frame that opened it: F1 is still down then, and would close it again at once.)
+            if (ImGui::GetFrameCount() > O.m_OpenFrame && (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_F1, false))) bClose = true;
+        }
+        ImGui::End();
+        if (bClose) Ctx.CloseOverlay();
+    }
+
+    //==============================================================================================
     // The palette
     //==============================================================================================
 
@@ -84,9 +344,9 @@ namespace ximgui::actions
         std::stable_sort(Rows.begin(), Rows.end(), [](const row& L, const row& R) { return L.m_Why.empty() && !R.m_Why.empty(); });
 
         ImGuiViewport* pVp = ImGui::GetMainViewport();
-        const float    W   = std::min(640.0f, pVp->Size.x * 0.8f);
-        ImGui::SetNextWindowPos(ImVec2(pVp->GetCenter().x, pVp->Pos.y + pVp->Size.y * 0.12f), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
-        ImGui::SetNextWindowSizeConstraints(ImVec2(W, 0.0f), ImVec2(W, pVp->Size.y * 0.7f));
+        const float    W   = std::min(Ctx.m_bKeyboardInPalette ? 800.0f : 640.0f, pVp->Size.x * 0.9f);
+        ImGui::SetNextWindowPos(ImVec2(pVp->GetCenter().x, pVp->Pos.y + pVp->Size.y * (Ctx.m_bKeyboardInPalette ? 0.04f : 0.12f)), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(W, 0.0f), ImVec2(W, pVp->Size.y * 0.94f));
         if (P.m_bFocus) ImGui::SetNextWindowFocus();
 
         bool bClose = false, bRestoreFocus = true;
@@ -120,7 +380,7 @@ namespace ximgui::actions
             if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) Activate = P.m_Selected;
             if (ImGui::IsKeyPressed(ImGuiKey_Escape)) bClose = true;
 
-            if (ImGui::BeginChild("##rows", ImVec2(0.0f, std::min(N, 12) * ImGui::GetTextLineHeightWithSpacing() + 4.0f)))
+            if (ImGui::BeginChild("##rows", ImVec2(0.0f, std::min(N, Ctx.m_bKeyboardInPalette ? 8 : 12) * ImGui::GetTextLineHeightWithSpacing() + 4.0f)))
             {
                 for (int i = 0; i < N; ++i)
                 {
@@ -146,6 +406,24 @@ namespace ximgui::actions
             }
             ImGui::EndChild();
             ImGui::TextDisabled("Enter runs   Esc closes   Up / Down to choose");
+            ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Keyboard").x - ImGui::GetFrameHeight() - ImGui::GetStyle().ItemInnerSpacing.x);
+            ImGui::Checkbox("Keyboard", &Ctx.m_bKeyboardInPalette);
+
+            // The keyboard: the keys of the selected action ringed in gold, on the layer of its first key.
+            if (Ctx.m_bKeyboardInPalette)
+            {
+                const action_info* pSel = (N && P.m_Selected < N) ? Rows[P.m_Selected].m_pA : nullptr;
+                const std::vector<ImGuiKeyChord> SelChords = pSel ? Ctx.Chords(*pSel) : std::vector<ImGuiKeyChord>{};
+
+                const auto ByKey = details::KeysOf(Ctx, P.m_Order);
+                details::keyboard_args A;
+                A.m_Unit      = ImGui::GetContentRegionAvail().x / details::k_KeyboardUnitsW;
+                A.m_Mods      = SelChords.empty() ? ImGuiKeyChord(0) : (SelChords.front() & ImGuiMod_Mask_);
+                A.m_pHighlight= &SelChords;
+                details::DrawKeyboardLegend(true);
+                const int Hovered = details::DrawKeyboard(ByKey, A);
+                details::DrawKeyDetails(Ctx, ByKey, Hovered, A.m_Mods, 4, pSel);
+            }
 
             if (Activate >= 0 && Activate < N && Rows[Activate].m_Why.empty())
             {
@@ -163,131 +441,6 @@ namespace ximgui::actions
         if (bClose) { if (bRestoreFocus) Ctx.ClosePalette(); else Ctx.m_Palette = {}; }
     }
 
-
-    //==============================================================================================
-    // The keyboard overlay (F1): the keys as a keyboard, coloured by what is on them where the person was working.
-    //   dark = nothing   blue = an action   tan = a host-wide action   mauve = both, or only with other modifiers held
-    // Hover a key for the actions on it (every modifier combination). Holding Ctrl / Shift / Alt, or ticking them, shows that layer.
-    //==============================================================================================
-
-    inline void DrawKeyboardOverlay(context& Ctx)
-    {
-        auto& O = Ctx.m_Overlay;
-        if (!O.m_bOpen) return;
-
-        struct entry { ImGuiKeyChord m_Chord; const action_info* m_pA; std::string m_Why; bool m_bGlobal; };
-        std::unordered_map<int, std::vector<entry>> ByKey;
-        for (const scope_entry& E : O.m_Order)
-            for (const action_info& A : Ctx.Actions(*E.m_pObject))
-            {
-                if (!Ctx.Live(E, A)) continue;
-                const std::string Why = Ctx.Reason(A, E.m_pInstance);
-                for (const ImGuiKeyChord C : Ctx.Chords(A))
-                {
-                    auto& V = ByKey[static_cast<int>(C & ~ImGuiMod_Mask_)];
-                    if (std::none_of(V.begin(), V.end(), [&](const entry& X) { return X.m_Chord == C && X.m_pA == &A; })) V.push_back({ C, &A, Why, E.m_bGlobal });
-                }
-            }
-
-        const ImGuiIO& io = ImGui::GetIO();
-        ImGuiKeyChord Mods = 0;
-        if (O.m_bCtrl  || io.KeyCtrl)  Mods |= ImGuiMod_Ctrl;
-        if (O.m_bShift || io.KeyShift) Mods |= ImGuiMod_Shift;
-        if (O.m_bAlt   || io.KeyAlt)   Mods |= ImGuiMod_Alt;
-
-        struct key { const char* m_pLabel; ImGuiKey m_Key; float m_X, m_Y, m_W; };
-        static const key Keys[] =
-        { {"Esc", ImGuiKey_Escape, 0, 0, 1}
-        , {"F1", ImGuiKey_F1, 2, 0, 1}, {"F2", ImGuiKey_F2, 3, 0, 1}, {"F3", ImGuiKey_F3, 4, 0, 1}, {"F4", ImGuiKey_F4, 5, 0, 1}
-        , {"F5", ImGuiKey_F5, 6.5f, 0, 1}, {"F6", ImGuiKey_F6, 7.5f, 0, 1}, {"F7", ImGuiKey_F7, 8.5f, 0, 1}, {"F8", ImGuiKey_F8, 9.5f, 0, 1}
-        , {"F9", ImGuiKey_F9, 11, 0, 1}, {"F10", ImGuiKey_F10, 12, 0, 1}, {"F11", ImGuiKey_F11, 13, 0, 1}, {"F12", ImGuiKey_F12, 14, 0, 1}
-        , {"`", ImGuiKey_GraveAccent, 0, 1.4f, 1}
-        , {"1", ImGuiKey_1, 1, 1.4f, 1}, {"2", ImGuiKey_2, 2, 1.4f, 1}, {"3", ImGuiKey_3, 3, 1.4f, 1}, {"4", ImGuiKey_4, 4, 1.4f, 1}, {"5", ImGuiKey_5, 5, 1.4f, 1}
-        , {"6", ImGuiKey_6, 6, 1.4f, 1}, {"7", ImGuiKey_7, 7, 1.4f, 1}, {"8", ImGuiKey_8, 8, 1.4f, 1}, {"9", ImGuiKey_9, 9, 1.4f, 1}, {"0", ImGuiKey_0, 10, 1.4f, 1}
-        , {"-", ImGuiKey_Minus, 11, 1.4f, 1}, {"=", ImGuiKey_Equal, 12, 1.4f, 1}, {"Bksp", ImGuiKey_Backspace, 13, 1.4f, 2}
-        , {"Tab", ImGuiKey_Tab, 0, 2.4f, 1.5f}
-        , {"Q", ImGuiKey_Q, 1.5f, 2.4f, 1}, {"W", ImGuiKey_W, 2.5f, 2.4f, 1}, {"E", ImGuiKey_E, 3.5f, 2.4f, 1}, {"R", ImGuiKey_R, 4.5f, 2.4f, 1}, {"T", ImGuiKey_T, 5.5f, 2.4f, 1}
-        , {"Y", ImGuiKey_Y, 6.5f, 2.4f, 1}, {"U", ImGuiKey_U, 7.5f, 2.4f, 1}, {"I", ImGuiKey_I, 8.5f, 2.4f, 1}, {"O", ImGuiKey_O, 9.5f, 2.4f, 1}, {"P", ImGuiKey_P, 10.5f, 2.4f, 1}
-        , {"[", ImGuiKey_LeftBracket, 11.5f, 2.4f, 1}, {"]", ImGuiKey_RightBracket, 12.5f, 2.4f, 1}, {"\\", ImGuiKey_Backslash, 13.5f, 2.4f, 1.5f}
-        , {"Caps", ImGuiKey_CapsLock, 0, 3.4f, 1.8f}
-        , {"A", ImGuiKey_A, 1.8f, 3.4f, 1}, {"S", ImGuiKey_S, 2.8f, 3.4f, 1}, {"D", ImGuiKey_D, 3.8f, 3.4f, 1}, {"F", ImGuiKey_F, 4.8f, 3.4f, 1}, {"G", ImGuiKey_G, 5.8f, 3.4f, 1}
-        , {"H", ImGuiKey_H, 6.8f, 3.4f, 1}, {"J", ImGuiKey_J, 7.8f, 3.4f, 1}, {"K", ImGuiKey_K, 8.8f, 3.4f, 1}, {"L", ImGuiKey_L, 9.8f, 3.4f, 1}
-        , {";", ImGuiKey_Semicolon, 10.8f, 3.4f, 1}, {"'", ImGuiKey_Apostrophe, 11.8f, 3.4f, 1}, {"Enter", ImGuiKey_Enter, 12.8f, 3.4f, 2.2f}
-        , {"Z", ImGuiKey_Z, 2.3f, 4.4f, 1}, {"X", ImGuiKey_X, 3.3f, 4.4f, 1}, {"C", ImGuiKey_C, 4.3f, 4.4f, 1}, {"V", ImGuiKey_V, 5.3f, 4.4f, 1}, {"B", ImGuiKey_B, 6.3f, 4.4f, 1}
-        , {"N", ImGuiKey_N, 7.3f, 4.4f, 1}, {"M", ImGuiKey_M, 8.3f, 4.4f, 1}, {",", ImGuiKey_Comma, 9.3f, 4.4f, 1}, {".", ImGuiKey_Period, 10.3f, 4.4f, 1}, {"/", ImGuiKey_Slash, 11.3f, 4.4f, 1}
-        , {"Space", ImGuiKey_Space, 3.8f, 5.4f, 6.2f}
-        , {"Ins", ImGuiKey_Insert, 15.5f, 1.4f, 1}, {"Home", ImGuiKey_Home, 16.5f, 1.4f, 1}, {"PgUp", ImGuiKey_PageUp, 17.5f, 1.4f, 1}
-        , {"Del", ImGuiKey_Delete, 15.5f, 2.4f, 1}, {"End", ImGuiKey_End, 16.5f, 2.4f, 1}, {"PgDn", ImGuiKey_PageDown, 17.5f, 2.4f, 1}
-        , {"Up", ImGuiKey_UpArrow, 16.5f, 4.4f, 1}
-        , {"Left", ImGuiKey_LeftArrow, 15.5f, 5.4f, 1}, {"Down", ImGuiKey_DownArrow, 16.5f, 5.4f, 1}, {"Right", ImGuiKey_RightArrow, 17.5f, 5.4f, 1}
-        };
-
-        const float U = 40.0f;
-        ImGuiViewport* pVp = ImGui::GetMainViewport();
-        ImGui::SetNextWindowPos(pVp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(ImVec2(18.8f * U + 24.0f, 7.4f * U + 100.0f));
-        bool bClose = false;
-        const ImGuiWindowFlags Flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking;
-        if (ImGui::Begin("Keyboard##ActionsOverlay", nullptr, Flags))
-        {
-            ImGui::Checkbox("Ctrl", &O.m_bCtrl); ImGui::SameLine(); ImGui::Checkbox("Shift", &O.m_bShift); ImGui::SameLine(); ImGui::Checkbox("Alt", &O.m_bAlt);
-            ImGui::SameLine(0, 24.0f);
-            ImGui::TextDisabled("what each key does where you were working:");
-            {   // the legend: the colours the keys below use
-                struct swatch { ImVec4 m_Color; const char* m_pText; };
-                const swatch Legend[] = { { ImVec4(0.32f, 0.50f, 0.78f, 1), "an action" }, { ImVec4(0.72f, 0.58f, 0.45f, 1), "always available (host)" }
-                                        , { ImVec4(0.55f, 0.45f, 0.55f, 1), "both" }, { ImVec4(0.47f, 0.40f, 0.50f, 1), "only with other modifiers held" }, { ImVec4(0.30f, 0.30f, 0.33f, 1), "nothing" } };
-                for (const swatch& L : Legend) { ImGui::TextColored(L.m_Color, "\xe2\x96\xa0"); ImGui::SameLine(0, 4.0f); ImGui::TextDisabled("%s", L.m_pText); ImGui::SameLine(0, 18.0f); }
-                ImGui::NewLine();
-            }
-            const ImVec2 Origin = ImGui::GetCursorScreenPos();
-
-            for (const key& K : Keys)
-            {
-                const auto  It   = ByKey.find(static_cast<int>(K.m_Key));
-                bool bAssigned = false, bGlobal = false, bOther = false;
-                if (It != ByKey.end())
-                    for (const entry& E : It->second)
-                    {
-                        if ((E.m_Chord & ImGuiMod_Mask_) == Mods) { (E.m_bGlobal ? bGlobal : bAssigned) = true; }
-                        else                                      bOther = true;
-                    }
-                ImVec4 Color(0.22f, 0.22f, 0.24f, 1.0f);                                        // nothing
-                if      (bAssigned && bGlobal)        Color = ImVec4(0.55f, 0.45f, 0.55f, 1.0f); // mixed
-                else if (bAssigned)                   Color = ImVec4(0.32f, 0.50f, 0.78f, 1.0f); // an action
-                else if (bGlobal)                     Color = ImVec4(0.72f, 0.58f, 0.45f, 1.0f); // host-wide
-                else if (bOther)                      Color = ImVec4(0.47f, 0.40f, 0.50f, 1.0f); // only with other modifiers
-                ImGui::SetCursorScreenPos(ImVec2(Origin.x + K.m_X * U, Origin.y + K.m_Y * U));
-                ImGui::PushStyleColor(ImGuiCol_Button, Color);
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(Color.x + 0.08f, Color.y + 0.08f, Color.z + 0.08f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, Color);
-                ImGui::Button(K.m_pLabel, ImVec2(K.m_W * U - 3.0f, U - 3.0f));
-                ImGui::PopStyleColor(3);
-                if (ImGui::IsItemHovered())
-                {
-                    // One line per action on this key: the chord, the action, why it cannot run now. The ones for the modifiers held come first.
-                    std::string Lines;
-                    if (It != ByKey.end())
-                    {
-                        auto V = It->second;
-                        std::sort(V.begin(), V.end(), [&](const entry& L, const entry& R)
-                            { const bool a = (L.m_Chord & ImGuiMod_Mask_) == Mods, b = (R.m_Chord & ImGuiMod_Mask_) == Mods; return a != b ? a : (L.m_Chord & ImGuiMod_Mask_) < (R.m_Chord & ImGuiMod_Mask_); });
-                        for (const entry& E : V)
-                            Lines += ChordName(E.m_Chord) + "   " + E.m_pA->m_Path + (E.m_Why.empty() ? "" : "  - " + E.m_Why) + "\n";
-                        if (!Lines.empty()) Lines.pop_back();
-                    }
-                    Ctx.ShowHint({ K.m_pLabel, It == ByKey.end() ? "Nothing is bound to this key here." : Lines, "", "", "" });
-                }
-            }
-
-            ImGui::SetCursorScreenPos(ImVec2(Origin.x, Origin.y + 6.6f * U));
-            ImGui::TextDisabled("Hover a key for what is on it.  F1 or Esc closes.");
-
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_F1, false)) bClose = true;
-        }
-        ImGui::End();
-        if (bClose) Ctx.CloseOverlay();
-    }
 
     //==============================================================================================
     // The keymap page: an xproperty object. One row per action (a std::map: path -> keys).

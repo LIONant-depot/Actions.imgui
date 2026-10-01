@@ -300,9 +300,13 @@ namespace ximgui::actions
             bool                     m_bOpen      = false;
             int                      m_OpenFrame  = 0;
             bool                     m_bCtrl = false, m_bShift = false, m_bAlt = false;     // the modifier layer being shown (held keys add to it)
+            int                      m_PinnedKey  = 0;           // the key that was clicked (an ImGuiKey): its details stay on screen
             ImGuiWindow*             m_pPrevFocus = nullptr;
             std::vector<scope_entry> m_Order;                    // what was live THEN
         } m_Overlay;
+
+        // The keyboard under the palette's search box (it follows the selected row). The person's choice, so it outlives the palette.
+        bool m_bKeyboardInPalette = true;
 
         void OpenOverlay()
         {
