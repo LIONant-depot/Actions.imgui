@@ -295,15 +295,21 @@ namespace ximgui::actions
 
     struct keymap_page
     {
-        std::map<std::string, std::string>  m_Keys;                 // "Level/Save" -> "Ctrl+S" ("A,B" for two keys, "" = unbound)
+        using section = std::map<std::string, std::string>;         // "Level/Save" -> "Ctrl+S" ("A,B" for two keys, "" = unbound)
+        std::map<std::string, section>      m_Keys;                 // one section per editor: the first part of the path ("Level", "Editor", "Assets"...)
         context*                            m_pCtx = nullptr;
 
-        // The action path of a row: the key of the map entry, "Keymap/Keys[s:Level/Save]".
+        // The editor an action belongs to: "Level/Entity/Delete" -> "Level".
+        static std::string SectionOf(const std::string& ActionPath) { return ActionPath.substr(0, ActionPath.find('/')); }
+
+        // The action path of a row: the key of the inner map entry, "Keymap/Keys[s:Level][s:Level/Save]". The section's own size row
+        // ("Keymap/Keys[s:Level]") is not an action and gives "".
         static std::string RowPath(std::string_view Path)
         {
-            const auto b = Path.find("[s:");
+            const auto b = Path.rfind("[s:");
             const auto e = Path.rfind(']');
-            return (b == std::string_view::npos || e == std::string_view::npos || e < b + 3) ? std::string{} : std::string(Path.substr(b + 3, e - b - 3));
+            if (b == std::string_view::npos || b == Path.find("[s:") || e == std::string_view::npos || e < b + 3) return {};
+            return std::string(Path.substr(b + 3, e - b - 3));
         }
 
         const action_info* Find(const std::string& Path) const
@@ -376,7 +382,7 @@ namespace ximgui::actions
     inline void DrawKeymapPage(context& Ctx, const xproperty::inspector& StyleFrom)
     {
         static keymap_page                          Page;
-        static std::map<std::string, std::string>   Built;
+        static std::map<std::string, keymap_page::section> Built;
         static xproperty::inspector                 Inspector{ "Keymap" };
         static bool                                 bWired = false;
 
@@ -395,9 +401,9 @@ namespace ximgui::actions
         }
 
         // What the context says now. The inspector is rebuilt only when this changes (never unconditionally).
-        std::map<std::string, std::string> Now;
+        std::map<std::string, keymap_page::section> Now;
         for (auto& [pObj, Actions] : Ctx.Types())
-            for (auto& A : Actions) Now[A.m_Path] = details::JoinChords(Ctx.Chords(A));
+            for (auto& A : Actions) Now[keymap_page::SectionOf(A.m_Path)][A.m_Path] = details::JoinChords(Ctx.Chords(A));
 
         if (Now != Built)
         {
@@ -408,7 +414,7 @@ namespace ximgui::actions
             Inspector.AppendEntityComponent(*xproperty::getObjectByType<keymap_page>(), &Page);
         }
 
-        ImGui::TextWrapped("Keys of every editor. Edit a value, or click 'Set key' and press the new key. A marked row differs from the default; its button puts the default back. Saved in your own keymap file.");
+        ImGui::TextWrapped("Keys of every editor, one section each. Edit a value, or click 'Set key' and press the new key. A marked row differs from the default; its button puts the default back. Saved in your own keymap file.");
         ImGui::Separator();
 
         Inspector.m_Settings = StyleFrom.m_Settings;           // the same row colours, paddings and spacing as the tab's own inspector
@@ -422,8 +428,10 @@ namespace ximgui::actions
 
         // Edited in the inspector (typed): apply whatever differs from what was built.
         std::vector<std::pair<std::string, std::string>> Edited;
-        for (auto& [Path, Keys] : Page.m_Keys)
-            if (auto It = Built.find(Path); It != Built.end() && It->second != Keys) Edited.push_back({ Path, Keys });
+        for (auto& [Name, Section] : Page.m_Keys)
+            for (auto& [Path, Keys] : Section)
+                if (auto Sec = Built.find(Name); Sec != Built.end())
+                    if (auto It = Sec->second.find(Path); It != Sec->second.end() && It->second != Keys) Edited.push_back({ Path, Keys });
         for (auto& [Path, Keys] : Edited) Ctx.SetKeys(Path, Keys);
 
         if (!Ctx.m_Problems.empty())
