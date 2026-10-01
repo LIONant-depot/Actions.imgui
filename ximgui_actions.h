@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <optional>
 #include <format>
 #include <cctype>
 #include <functional>
@@ -147,6 +148,7 @@ namespace ximgui::actions
         const xproperty::type::object*  m_pObject   = nullptr;
         void*                           m_pInstance = nullptr;
         std::vector<std::string>        m_Prefixes;             // scopes this panel makes live (the object's root actions always are)
+        bool                            m_bGlobal   = false;    // registered with Global(): the host's own, live wherever the person is
     };
 
     struct input_result
@@ -158,12 +160,33 @@ namespace ximgui::actions
         std::string  m_Reason;              // why it did not run
     };
 
-    // What a hint card shows; listeners of context::m_OnCardSection add their own lines to it.
-    struct card
+    // What a hint says about an action. The host shows it with its own hint window (context::m_pShowHint); without one a plain tooltip is used.
+    struct hint_text
     {
-        const action_info*  m_pAction   = nullptr;
-        void*               m_pInstance = nullptr;
+        std::string m_Topic;        // "Tool Select"
+        std::string m_Body;         // the action's help
+        std::string m_Shortcut;     // "Q" ("" = none)
+        std::string m_Disabled;     // why it cannot run now ("" = it can)
+        std::string m_Detail;       // the action's path
     };
+
+    //==============================================================================================
+    // Every type that declares actions, whether or not an editor of that type is open - so the keymap page, the menus and BindKey know all
+    // of them from the start. A type registers itself once, right after its XPROPERTY_REG:   XIMGUI_ACTIONS_OWNER(session_actions)
+    //==============================================================================================
+
+    inline std::vector<const xproperty::type::object* (*)() noexcept>& OwnerTypes() noexcept
+    {
+        static std::vector<const xproperty::type::object* (*)() noexcept> s_Types;
+        return s_Types;
+    }
+
+    template<typename T>
+    struct register_owner
+    {
+        register_owner() noexcept { OwnerTypes().push_back(+[]() noexcept { return xproperty::getObjectByType<T>(); }); }
+    };
+#define XIMGUI_ACTIONS_OWNER(T) inline const ximgui::actions::register_owner<T> g_ximgui_actions_owner_##T;
 
     //==============================================================================================
     // The context
@@ -172,7 +195,6 @@ namespace ximgui::actions
     struct context
     {
         xproperty::settings::context                                m_Settings;
-        xdelegate::thread_unsafe<context&, const card&>             m_OnCardSection;    // several listeners may each add a section to a hint card
         xdelegate::thread_unsafe<context&, const input_result&>     m_OnInput;          // a chord reached (or was refused by) an action
         input_result                                                m_Last;             // the last one: what "Explain last key" says
 
@@ -210,6 +232,7 @@ namespace ximgui::actions
         // them, plus the keymap bindings no indexed action matches (informational: its editor may simply not be open).
         std::string Validate()
         {
+            IndexKnownTypes();
             std::unordered_map<std::string, std::string> Owner;
             std::vector<std::string> Known;
             for (auto& [pObj, Actions] : m_Types)
@@ -271,6 +294,36 @@ namespace ximgui::actions
         // "put the keyboard in it"; true when the text changed. Without one the palette uses a plain ImGui input.
         bool (*m_pSearchBox)(std::string&, float, bool) noexcept = nullptr;
 
+        // The keyboard overlay (F1): every key coloured by what is on it in the place the person was working. Drawn by ximgui_actions_ui.h.
+        struct overlay_state
+        {
+            bool                     m_bOpen      = false;
+            int                      m_OpenFrame  = 0;
+            bool                     m_bCtrl = false, m_bShift = false, m_bAlt = false;     // the modifier layer being shown (held keys add to it)
+            ImGuiWindow*             m_pPrevFocus = nullptr;
+            std::vector<scope_entry> m_Order;                    // what was live THEN
+        } m_Overlay;
+
+        void OpenOverlay()
+        {
+            if (m_Overlay.m_bOpen) { CloseOverlay(); return; }
+            m_Overlay = {};
+            m_Overlay.m_bOpen     = true;
+            m_Overlay.m_OpenFrame = ImGui::GetFrameCount();
+            if (ImGuiContext* g = ImGui::GetCurrentContext(); g) m_Overlay.m_pPrevFocus = g->NavWindow;
+            auto Order = FocusOrder();
+            if (Order.empty()) Order = AllEntries();
+            for (const scope_entry* p : Order) m_Overlay.m_Order.push_back(*p);
+        }
+        void CloseOverlay()
+        {
+            if (m_Overlay.m_pPrevFocus) ImGui::FocusWindow(m_Overlay.m_pPrevFocus);
+            m_Overlay = {};
+        }
+
+        // How a hint is drawn (xeditor::hint::Draw): the hint window of the editors, kept on screen. Without one, a plain ImGui tooltip.
+        void (*m_pShowHint)(const hint_text&) noexcept = nullptr;
+
         bool IsCapturing() const noexcept { return !m_Capture.m_Path.empty(); }
 
         // Opens the palette (or closes it when it is open) over what is live in the window that has the focus.
@@ -293,7 +346,19 @@ namespace ximgui::actions
             m_Palette = {};
         }
 
-        const std::unordered_map<const xproperty::type::object*, std::vector<action_info>>& Types() const noexcept { return m_Types; }
+        // Every type with actions (the registered ones, and any other that was scoped), indexed.
+        const std::unordered_map<const xproperty::type::object*, std::vector<action_info>>& Types() noexcept
+        {
+            IndexKnownTypes();
+            return m_Types;
+        }
+
+        void IndexKnownTypes()
+        {
+            if (m_KnownIndexed == OwnerTypes().size()) return;
+            for (auto* pFn : OwnerTypes()) if (const auto* pObj = pFn()) (void)Actions(*pObj);
+            m_KnownIndexed = OwnerTypes().size();
+        }
 
         // Another action of the same object and scope that already has this chord (it could never be reached next to A).
         const action_info* FindConflict(const action_info& A, ImGuiKeyChord C)
@@ -351,6 +416,15 @@ namespace ximgui::actions
         {
             if (auto It = m_Overrides.find(A.m_Path); It != m_Overrides.end()) return It->second;
             return A.m_Default;
+        }
+
+        // The keys of an action by its full path (what a menu shows); nullopt when no indexed action has that path.
+        std::optional<std::string> KeysOfPath(std::string_view Path)
+        {
+            IndexKnownTypes();
+            for (auto& [pObj, Actions] : m_Types)
+                for (auto& A : Actions) if (A.m_Path == Path) return KeysText(A);
+            return std::nullopt;
         }
 
         std::string KeysText(const action_info& A) const
@@ -417,7 +491,9 @@ namespace ximgui::actions
         template<typename T, typename...T_PREFIXES>
         void Global(T& Owner, T_PREFIXES...Prefixes)
         {
-            m_Globals.push_back(MakeEntry(*xproperty::getObject(Owner), &Owner, { Prefixes... }));
+            auto E = MakeEntry(*xproperty::getObject(Owner), &Owner, { Prefixes... });
+            E.m_bGlobal = true;
+            m_Globals.push_back(std::move(E));
         }
 
         //------------------------------------------------------------------------------------------
@@ -479,10 +555,13 @@ namespace ximgui::actions
         std::string List()
         {
             std::string S;
+            std::vector<std::pair<const action_info*, void*>> Seen;        // an editor registers several windows: list each of its actions once
             for (const scope_entry* pE : AllEntries())
                 for (auto& A : Actions(*pE->m_pObject))
                 {
                     if (!IsLive(*pE, A) || Hidden(A, pE->m_pInstance)) continue;
+                    if (std::find(Seen.begin(), Seen.end(), std::make_pair(&A, pE->m_pInstance)) != Seen.end()) continue;
+                    Seen.emplace_back(&A, pE->m_pInstance);
                     const auto Why = Reason(A, pE->m_pInstance);
                     S += A.m_Path + "\t" + KeysText(A) + "\t" + (Why.empty() ? std::string("ok") : Why) + "\n";
                 }
@@ -561,38 +640,48 @@ namespace ximgui::actions
             return { nullptr, nullptr };
         }
 
-        // After any item that stands for an action. One line on hover; hold Alt for the full card.
+        // "ToolSelect" -> "Tool Select"
+        static std::string Prettify(const char* pName)
+        {
+            std::string Out;
+            for (const char* p = pName; *p; ++p)
+            {
+                if (p != pName && std::isupper(static_cast<unsigned char>(*p)) && !std::isupper(static_cast<unsigned char>(p[-1]))) Out += ' ';
+                Out += *p;
+            }
+            return Out;
+        }
+
+        hint_text MakeHint(const action_info& A, const std::string& Why) const
+        {
+            return { Prettify(A.m_pName), A.m_pHelp ? A.m_pHelp : "", KeysText(A), Why, A.m_Path };
+        }
+
+        void ShowHint(const hint_text& H)
+        {
+            if (m_pShowHint) { m_pShowHint(H); return; }
+            std::string Text = H.m_Topic + (H.m_Shortcut.empty() ? "" : "  (" + H.m_Shortcut + ")");
+            if (!H.m_Disabled.empty()) Text += " - " + H.m_Disabled;
+            ImGui::SetTooltip("%s", Text.c_str());
+        }
+
+        // After any item that stands for an action: its hint while the mouse rests on it.
         void Hint(const action_info& A, void* pInstance)
         {
             if (!ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_ForTooltip)) return;
-            const auto Why  = Reason(A, pInstance);
-            const auto Keys = KeysText(A);
-
-            if (!ImGui::GetIO().KeyAlt)
-            {
-                if (!Why.empty())        ImGui::SetTooltip("%s - %s", A.m_pName, Why.c_str());
-                else if (!Keys.empty())  ImGui::SetTooltip("%s  (%s)", A.m_pName, Keys.c_str());
-                else                     ImGui::SetTooltip("%s", A.m_pName);
-                return;
-            }
-            DrawCard(A, pInstance, Why, Keys);
+            ShowHint(MakeHint(A, Reason(A, pInstance)));
         }
 
         // For a library that asks "who draws the help of this path?" (the inspector's m_OnHelp). True when the path is an action.
         bool HintForPath(const xproperty::type::object& Obj, void* pInstance, std::string_view Path)
         {
             for (auto& A : Actions(Obj))
-                if (A.m_Path == Path)
-                {
-                    const auto Why  = Reason(A, pInstance);
-                    DrawCard(A, pInstance, Why, KeysText(A));
-                    return true;
-                }
+                if (A.m_Path == Path) { ShowHint(MakeHint(A, Reason(A, pInstance))); return true; }
             return false;
         }
 
-        // The hint card of an action, without asking whether it can run (the keymap page does not know the instance).
-        void HintCard(const action_info& A) { DrawCard(A, nullptr, std::string{}, KeysText(A)); }
+        // The hint of an action, without asking whether it can run (the keymap page does not know the instance).
+        void HintCard(const action_info& A) { ShowHint(MakeHint(A, {})); }
 
         // The actions chosen from menus/buttons this frame run here (outside every menu), once, in order.
         void RunPending()
@@ -606,6 +695,7 @@ namespace ximgui::actions
         struct window_scope { ImGuiID m_Window; scope_entry m_Scope; };
 
         std::size_t                                                                     m_ValidatedTypes = 0;
+        std::size_t                                                                     m_KnownIndexed   = 0;
         std::unordered_map<const xproperty::type::object*, std::vector<action_info>>    m_Types;
         std::vector<window_scope>                                                       m_Windows, m_PrevWindows;
         std::vector<scope_entry>                                                        m_Globals, m_PrevGlobals;
@@ -661,7 +751,17 @@ namespace ximgui::actions
                 for (; pW; pW = pW->ParentWindow)
                     for (auto& W : m_PrevWindows) if (W.m_Window == pW->ID) Add(&W.m_Scope);
             };
-            if (ImGuiContext* g = ImGui::GetCurrentContext(); g) { Chain(g->NavWindow); Chain(g->HoveredWindow); }
+            if (ImGuiContext* g = ImGui::GetCurrentContext(); g)
+            {
+                Chain(g->NavWindow);
+                // What the mouse is over counts too (Q/W/E/R over the viewport while the tree has the focus), but only for the editor
+                // that has the focus: a Delete aimed at the asset browser must never reach an entity of a Level that is merely under the mouse.
+                const std::size_t nFocus = Out.size();
+                std::vector<const scope_entry*> Hovered;
+                { auto Save = std::move(Out); Out.clear(); Chain(g->HoveredWindow); Hovered = std::move(Out); Out = std::move(Save); }
+                for (const scope_entry* pH : Hovered)
+                    if (nFocus == 0 || std::any_of(Out.begin(), Out.begin() + nFocus, [&](const scope_entry* pF) { return pF->m_pInstance == pH->m_pInstance; })) Add(pH);
+            }
             for (auto& G : m_PrevGlobals) Add(&G);
             return Out;
         }
@@ -706,25 +806,6 @@ namespace ximgui::actions
                 for (auto& A : All) if (A.m_Scope.empty() && Visit(A)) return R;
             }
             return R;
-        }
-
-        void DrawCard(const action_info& A, void* pInstance, const std::string& Why, const std::string& Keys)
-        {
-            ImGui::BeginTooltip();
-            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
-            if (ImGui::BeginTable("##ActionCard", 2, ImGuiTableFlags_SizingFixedFit))
-            {
-                auto Row = [](const char* pL, const char* pR) { ImGui::TableNextRow(); ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("%s", pL); ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(pR); };
-                Row("Action:", A.m_pName);
-                Row("Path:",   A.m_Path.c_str());
-                if (!Keys.empty()) Row("Keys:", Keys.c_str());
-                if (!Why.empty())  Row("Unavailable:", Why.c_str());
-                ImGui::EndTable();
-            }
-            if (A.m_pHelp) { ImGui::Separator(); ImGui::TextUnformatted(A.m_pHelp); }
-            m_OnCardSection.NotifyAll(*this, card{ &A, pInstance });
-            ImGui::PopTextWrapPos();
-            ImGui::EndTooltip();
         }
     };
 }
