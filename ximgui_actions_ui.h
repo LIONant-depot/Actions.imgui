@@ -72,6 +72,19 @@ namespace ximgui::actions
 
     namespace details
     {
+        // The colours of the keyboard and the mouse: soft and desaturated, so a layer reads at a glance without shouting, with dark ink on the
+        // light faces (the pastel ones) and light ink on the dark ones.
+        inline constexpr ImVec4 k_ColUnassigned { 0.30f, 0.30f, 0.31f, 1.0f };
+        inline constexpr ImVec4 k_ColAction     { 0.43f, 0.55f, 0.74f, 1.0f };
+        inline constexpr ImVec4 k_ColHost       { 0.73f, 0.59f, 0.47f, 1.0f };
+        inline constexpr ImVec4 k_ColMixed      { 0.62f, 0.52f, 0.63f, 1.0f };
+        inline constexpr ImVec4 k_ColModifierOn { 0.38f, 0.65f, 0.51f, 1.0f };
+        inline constexpr ImVec4 k_ColModifierOff{ 0.21f, 0.21f, 0.23f, 1.0f };
+        inline constexpr ImU32  k_InkOnLight    = IM_COL32(247, 248, 251, 245);
+        inline constexpr ImU32  k_InkOnDark     = IM_COL32(205, 205, 212, 255);
+        inline constexpr ImU32  k_InkName       = IM_COL32(247, 248, 251, 215);              // the action's name on a key or a button
+        inline constexpr ImU32  k_Outline       = IM_COL32(86, 86, 94, 255);
+
         struct key_entry { ImGuiKeyChord m_Chord; const action_info* m_pA; std::string m_Why; bool m_bGlobal; };
         using keys_by_key = std::unordered_map<int, std::vector<key_entry>>;
 
@@ -164,13 +177,13 @@ namespace ximgui::actions
                         else                                          bOther = true;
                     }
 
-                ImVec4 Color(0.25f, 0.25f, 0.28f, 1.0f);                                         // nothing
-                if      (bAssigned && bGlobal) Color = ImVec4(0.55f, 0.45f, 0.55f, 1.0f);       // both
-                else if (bAssigned)            Color = ImVec4(0.32f, 0.50f, 0.78f, 1.0f);       // an action
-                else if (bGlobal)              Color = ImVec4(0.72f, 0.58f, 0.45f, 1.0f);       // host-wide
+                ImVec4 Color = k_ColUnassigned;                                                  // nothing
+                if      (bAssigned && bGlobal) Color = k_ColMixed;                               // both
+                else if (bAssigned)            Color = k_ColAction;                              // an action
+                else if (bGlobal)              Color = k_ColHost;                                // host-wide
                 const bool bModKey = K.m_Mod != 0;
                 const bool bOn     = bModKey && (A.m_Mods & K.m_Mod) != 0;
-                if (bModKey) Color = bOn ? ImVec4(0.30f, 0.62f, 0.45f, 1.0f) : ImVec4(0.17f, 0.17f, 0.19f, 1.0f);
+                if (bModKey) Color = bOn ? k_ColModifierOn : k_ColModifierOff;
 
                 ImGui::SetCursorScreenPos(Min);
                 ImGui::PushID(&K);
@@ -185,9 +198,8 @@ namespace ximgui::actions
                 }
 
                 // The keycap: an outline, a dark rim (the side of the key, thicker at the bottom) and the face on top.
-                pList->AddRectFilled(Min, Max, IM_COL32(12, 12, 14, 255), 5.0f);
-                pList->AddRectFilled(ImVec2(Min.x + 2.0f, Min.y + 2.0f), ImVec2(Max.x - 2.0f, Max.y - 4.0f), ImGui::ColorConvertFloat4ToU32(Color), 4.0f);
-                pList->AddRect(Min, Max, IM_COL32(112, 112, 124, 255), 5.0f);
+                pList->AddRectFilled(Min, Max, ImGui::ColorConvertFloat4ToU32(ImVec4(Color.x * 0.55f, Color.y * 0.55f, Color.z * 0.55f, 1.0f)), 5.0f);
+                pList->AddRectFilled(ImVec2(Min.x + 1.5f, Min.y + 1.5f), ImVec2(Max.x - 1.5f, Max.y - 3.5f), ImGui::ColorConvertFloat4ToU32(Color), 4.0f);
                 if (A.m_pPinned && !bModKey && *A.m_pPinned == static_cast<int>(K.m_Key)) pList->AddRect(Min, Max, IM_COL32(235, 235, 240, 255), 4.0f, 0, 1.5f);
 
                 if (A.m_pHighlight)
@@ -196,14 +208,14 @@ namespace ximgui::actions
                             pList->AddRect(Min, Max, IM_COL32(255, 205, 70, 255), 4.0f, 0, 2.5f);
 
                 // The label (top left), the action's name (below it), the corner mark.
-                const ImU32 Ink = bAssigned || bGlobal || bOn ? IM_COL32(255, 255, 255, 255) : IM_COL32(205, 205, 212, 255);
+                const ImU32 Ink = bAssigned || bGlobal || bOn ? k_InkOnLight : k_InkOnDark;
                 pList->AddText(pFont, Big, ImVec2(Min.x + 5.0f, Min.y + 3.0f), Ink, K.m_pLabel);
                 if (A.m_bNames && pFirst)
                 {
                     const std::string& Path = pFirst->m_pA->m_Path;
                     const std::string  Name = Path.substr(Path.rfind('/') + 1);
                     pList->PushClipRect(Min, Max, true);
-                    pList->AddText(pFont, Small, ImVec2(Min.x + 5.0f, Min.y + U * 0.5f), IM_COL32(255, 255, 255, 235), Name.c_str());
+                    pList->AddText(pFont, Small, ImVec2(Min.x + 5.0f, Min.y + U * 0.5f), k_InkName, Name.c_str());
                     pList->PopClipRect();
                 }
                 if (bOther)
@@ -222,9 +234,9 @@ namespace ximgui::actions
         {
             enum shape { box, corner, ring };
             struct swatch { ImVec4 m_Color; const char* m_pText; shape m_Shape; };
-            const swatch Legend[] = { { ImVec4(0.32f, 0.50f, 0.78f, 1), "action", box }, { ImVec4(0.72f, 0.58f, 0.45f, 1), "host-wide", box }
-                                    , { ImVec4(0.55f, 0.45f, 0.55f, 1), "both", box }, { ImVec4(0.75f, 0.59f, 0.84f, 1), "more with other modifiers", corner }
-                                    , { ImVec4(0.30f, 0.62f, 0.45f, 1), "modifier on", box }, { ImVec4(1.0f, 0.80f, 0.27f, 1), "selected", ring } };
+            const swatch Legend[] = { { k_ColAction, "action", box }, { k_ColHost, "host-wide", box }
+                                    , { k_ColMixed, "both", box }, { ImVec4(0.75f, 0.59f, 0.84f, 1), "more with other modifiers", corner }
+                                    , { k_ColModifierOn, "modifier on", box }, { ImVec4(1.0f, 0.80f, 0.27f, 1), "selected", ring } };
             const float H = ImGui::GetTextLineHeight();
             for (const swatch& L : Legend)
             {
@@ -280,24 +292,72 @@ namespace ximgui::actions
 
         inline int MouseRegion(mouse_input In) noexcept { return In == mouse_input::Left ? -1 : In == mouse_input::Right ? -2 : -3; }
 
+        // The outline of the mouse: wider at the top, narrower at the bottom, with soft corners (a squircle that tapers). Points go round the shape.
+        inline std::vector<ImVec2> MouseOutline(ImVec2 Center, float HalfW, float HalfH, float Shrink = 1.0f)
+        {
+            constexpr int   N = 72;
+            constexpr float Exponent = 3.0f;                    // 2 = ellipse, larger = squarer
+            std::vector<ImVec2> P;
+            P.reserve(N);
+            for (int i = 0; i < N; ++i)
+            {
+                const float t  = 6.2831853f * static_cast<float>(i) / static_cast<float>(N);
+                const float c  = std::cos(t), s = std::sin(t);
+                const float x  = (c < 0 ? -1.0f : 1.0f) * std::pow(std::fabs(c), 2.0f / Exponent);
+                const float y  = (s < 0 ? -1.0f : 1.0f) * std::pow(std::fabs(s), 2.0f / Exponent);      // -1 top ... +1 bottom
+                const float k  = std::clamp((y + 0.25f) / 1.25f, 0.0f, 1.0f);                            // 0 on the upper part, 1 at the very bottom
+                const float tp = 1.0f - 0.24f * k * k;                                                   // the taper
+                P.push_back(ImVec2(Center.x + x * HalfW * tp * Shrink, Center.y + y * HalfH * Shrink));
+            }
+            return P;
+        }
+
+        // The part of a convex polygon inside a rectangle (Sutherland-Hodgman against its four sides).
+        inline std::vector<ImVec2> ClipToRect(std::vector<ImVec2> In, float X0, float Y0, float X1, float Y1)
+        {
+            auto Clip = [](std::vector<ImVec2>& Poly, auto Inside, auto Cut)
+            {
+                std::vector<ImVec2> Out;
+                for (std::size_t i = 0; i < Poly.size(); ++i)
+                {
+                    const ImVec2 A = Poly[i], B = Poly[(i + 1) % Poly.size()];
+                    const bool   a = Inside(A), b = Inside(B);
+                    if (a) Out.push_back(A);
+                    if (a != b) Out.push_back(Cut(A, B));
+                }
+                Poly = std::move(Out);
+            };
+            auto AtX = [](ImVec2 A, ImVec2 B, float X) { const float t = (X - A.x) / (B.x - A.x); return ImVec2(X, A.y + t * (B.y - A.y)); };
+            auto AtY = [](ImVec2 A, ImVec2 B, float Y) { const float t = (Y - A.y) / (B.y - A.y); return ImVec2(A.x + t * (B.x - A.x), Y); };
+            Clip(In, [&](ImVec2 P) { return P.x >= X0; }, [&](ImVec2 A, ImVec2 B) { return AtX(A, B, X0); });
+            Clip(In, [&](ImVec2 P) { return P.x <= X1; }, [&](ImVec2 A, ImVec2 B) { return AtX(A, B, X1); });
+            Clip(In, [&](ImVec2 P) { return P.y >= Y0; }, [&](ImVec2 A, ImVec2 B) { return AtY(A, B, Y0); });
+            Clip(In, [&](ImVec2 P) { return P.y <= Y1; }, [&](ImVec2 A, ImVec2 B) { return AtY(A, B, Y1); });
+            return In;
+        }
+
         inline int DrawMouse(const std::vector<flat_gesture>& All, ImGuiKeyChord Mods, float U, int* pPinned)
         {
             const ImVec2 O = ImGui::GetCursorScreenPos();
             ImDrawList*  d = ImGui::GetWindowDrawList();
             ImFont*      pFont = ImGui::GetFont();
             const float  Small = ImGui::GetFontSize() * 0.78f;
-            const float  W = 3.9f * U, H = 5.4f * U, BtnH = 2.3f * U;
+            const float  W = 3.4f * U, H = 5.4f * U, BtnH = 2.4f * U;
+            const float  Half = W * 0.5f;
+            const ImVec2 Center(O.x + Half, O.y + H * 0.5f);
             int Hovered = 0;
 
-            // The body.
-            d->AddRectFilled(O, ImVec2(O.x + W, O.y + H), IM_COL32(12, 12, 14, 255), 28.0f);
+            // The body, then the two buttons cut out of a slightly smaller copy of it (so the body shows as a thin rim round them).
+            const auto Body = MouseOutline(Center, Half, H * 0.5f);
+            const auto Face = MouseOutline(Center, Half, H * 0.5f, 0.93f);
+            d->AddConvexPolyFilled(Body.data(), static_cast<int>(Body.size()), ImGui::ColorConvertFloat4ToU32(k_ColUnassigned));       // the colour of a key with nothing on it
 
-            struct region { int m_Id; ImVec2 m_Min, m_Max; ImDrawFlags m_Round; const char* m_pLabel; };
-            const float Half = W * 0.5f;
+            const float GapHalf = 0.3f * U;                                                  // half the space between the buttons: the wheel lives there
+            struct region { int m_Id; ImVec2 m_Min, m_Max; const char* m_pLabel; };
             const region Regions[] =
-            { { -1, ImVec2(O.x + 4.0f,                O.y + 4.0f), ImVec2(O.x + Half - 0.42f * U, O.y + BtnH), 0, "LMB" }
-            , { -2, ImVec2(O.x + Half + 0.42f * U,    O.y + 4.0f), ImVec2(O.x + W - 4.0f,         O.y + BtnH), 0, "RMB" }
-            , { -3, ImVec2(O.x + Half - 0.26f * U,    O.y + 0.35f * U), ImVec2(O.x + Half + 0.26f * U, O.y + 1.45f * U), 0, "" } };
+            { { -1, ImVec2(O.x,                 O.y),             ImVec2(Center.x - GapHalf, O.y + BtnH),         "LMB" }
+            , { -2, ImVec2(Center.x + GapHalf,  O.y),             ImVec2(O.x + W,            O.y + BtnH),         "RMB" }
+            , { -3, ImVec2(Center.x - 0.2f * U, O.y + 0.4f * U),  ImVec2(Center.x + 0.2f * U, O.y + 1.5f * U),    ""    } };
 
             for (const region& R : Regions)
             {
@@ -316,7 +376,7 @@ namespace ximgui::actions
                     }
                     else bOther = true;
                 }
-                ImVec4 Color = bHere ? ImVec4(0.32f, 0.50f, 0.78f, 1.0f) : ImVec4(0.25f, 0.25f, 0.28f, 1.0f);
+                ImVec4 Color = bHere ? k_ColAction : k_ColUnassigned;
 
                 ImGui::SetCursorScreenPos(R.m_Min);
                 ImGui::PushID(R.m_Id);
@@ -324,29 +384,41 @@ namespace ximgui::actions
                 ImGui::PopID();
                 if (ImGui::IsItemHovered()) { Hovered = R.m_Id; Color = ImVec4(Color.x + 0.08f, Color.y + 0.08f, Color.z + 0.08f, 1.0f); }
                 if (ImGui::IsItemClicked() && pPinned) *pPinned = (*pPinned == R.m_Id) ? 0 : R.m_Id;
+                const bool bPinned = pPinned && *pPinned == R.m_Id;
+                const ImU32 Fill = ImGui::ColorConvertFloat4ToU32(Color);
 
-                d->AddRectFilled(R.m_Min, R.m_Max, ImGui::ColorConvertFloat4ToU32(Color), 6.0f);
-                d->AddRect(R.m_Min, R.m_Max, IM_COL32(112, 112, 124, 255), 6.0f);
-                if (pPinned && *pPinned == R.m_Id) d->AddRect(R.m_Min, R.m_Max, IM_COL32(235, 235, 240, 255), 6.0f, 0, 1.5f);
-                if (bOther) d->AddTriangleFilled(ImVec2(R.m_Max.x - 9.0f, R.m_Min.y + 1.0f), ImVec2(R.m_Max.x - 1.0f, R.m_Min.y + 1.0f), ImVec2(R.m_Max.x - 1.0f, R.m_Min.y + 9.0f), IM_COL32(190, 150, 215, 255));
-                if (R.m_pLabel[0])
+                if (R.m_Id == -3)                                                            // the wheel: a pill
                 {
-                    d->AddText(pFont, ImGui::GetFontSize(), ImVec2(R.m_Min.x + 6.0f, R.m_Min.y + 4.0f), IM_COL32(235, 235, 240, 255), R.m_pLabel);
-                    d->PushClipRect(R.m_Min, R.m_Max, true);
-                    if (pName)  d->AddText(pFont, Small, ImVec2(R.m_Min.x + 6.0f, R.m_Min.y + 0.8f * U),  IM_COL32(255, 255, 255, 235), pName);
-                    if (pName2) d->AddText(pFont, Small, ImVec2(R.m_Min.x + 6.0f, R.m_Min.y + 1.15f * U), IM_COL32(255, 255, 255, 200), pName2);
-                    d->PopClipRect();
+                    d->AddRectFilled(R.m_Min, R.m_Max, Fill, 0.2f * U);
+                    d->AddRect(R.m_Min, R.m_Max, bPinned ? IM_COL32(235, 235, 240, 255) : k_Outline, 0.2f * U, 0, bPinned ? 1.5f : 1.0f);
+                    if (bOther) d->AddTriangleFilled(ImVec2(R.m_Max.x - 8.0f, R.m_Min.y + 1.0f), ImVec2(R.m_Max.x - 1.0f, R.m_Min.y + 1.0f), ImVec2(R.m_Max.x - 1.0f, R.m_Min.y + 8.0f), IM_COL32(190, 150, 215, 255));
+                    if (pName)                                                               // its names go under the buttons, centred
+                    {
+                        std::string Text = pName;
+                        if (pName2) { Text += ", "; Text += pName2; }
+                        const float TextW = ImGui::CalcTextSize(Text.c_str()).x * (Small / ImGui::GetFontSize());
+                        d->AddText(pFont, Small, ImVec2(Center.x - TextW * 0.5f, O.y + BtnH + 0.25f * U), IM_COL32(255, 255, 255, 235), Text.c_str());
+                    }
+                    continue;
                 }
-                else if (pName)         // the wheel (and the middle button): its names go under the buttons, centred
+
+                // A button: the face of the mouse cut to its side of the middle and to the top part, a few pixels in from its neighbours.
+                const auto Poly = ClipToRect(Face, R.m_Min.x + 1.5f, R.m_Min.y, R.m_Max.x - 1.5f, R.m_Max.y);
+                if (Poly.size() >= 3)
                 {
-                    std::string Text = pName;
-                    if (pName2) { Text += ", "; Text += pName2; }
-                    const float TextW = ImGui::CalcTextSize(Text.c_str()).x * (Small / ImGui::GetFontSize());
-                    d->AddText(pFont, Small, ImVec2(O.x + Half - TextW * 0.5f, O.y + BtnH + 0.2f * U), IM_COL32(255, 255, 255, 235), Text.c_str());
+                    d->AddConvexPolyFilled(Poly.data(), static_cast<int>(Poly.size()), Fill);
+                    d->AddPolyline(Poly.data(), static_cast<int>(Poly.size()), bPinned ? IM_COL32(235, 235, 240, 255) : k_Outline, ImDrawFlags_Closed, bPinned ? 1.5f : 1.0f);
                 }
+                const float TextX = (R.m_Id == -1 ? R.m_Min.x + 0.55f * U : R.m_Min.x + 0.2f * U);
+                d->AddText(pFont, ImGui::GetFontSize(), ImVec2(TextX, R.m_Min.y + 0.55f * U), bHere ? k_InkOnLight : k_InkOnDark, R.m_pLabel);
+                d->PushClipRect(R.m_Min, R.m_Max, true);
+                if (pName)  d->AddText(pFont, Small, ImVec2(TextX, R.m_Min.y + 1.05f * U), k_InkName, pName);
+                if (pName2) d->AddText(pFont, Small, ImVec2(TextX, R.m_Min.y + 1.4f * U),  k_InkName, pName2);
+                d->PopClipRect();
+                if (bOther) d->AddTriangleFilled(ImVec2(R.m_Max.x - 12.0f, R.m_Min.y + 0.6f * U), ImVec2(R.m_Max.x - 4.0f, R.m_Min.y + 0.6f * U), ImVec2(R.m_Max.x - 4.0f, R.m_Min.y + 0.6f * U + 8.0f), IM_COL32(190, 150, 215, 255));
             }
 
-            d->AddRect(O, ImVec2(O.x + W, O.y + H), IM_COL32(112, 112, 124, 255), 28.0f);
+            d->AddPolyline(Body.data(), static_cast<int>(Body.size()), k_Outline, ImDrawFlags_Closed, 1.5f);
             ImGui::SetCursorScreenPos(O);
             ImGui::Dummy(ImVec2(W, H));
             return Hovered;
@@ -390,7 +462,9 @@ namespace ximgui::actions
         bool bClose = false;
         const ImGuiWindowFlags Flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings
                                      | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_AlwaysAutoResize;
-        if (ImGui::Begin("Keyboard##ActionsOverlay", nullptr, Flags))
+        bool bWindowOpen = true;                                                     // the X of the title bar clears it
+        const bool bShown = ImGui::Begin("Keyboard##ActionsOverlay", &bWindowOpen, Flags);
+        if (bShown)
         {
             ImGui::TextDisabled("What each key and mouse button does where you were working. Click Ctrl / Shift / Alt to see their layer; click a key or a mouse button to keep its details below.");
             details::DrawKeyboardLegend(false);
@@ -400,7 +474,7 @@ namespace ximgui::actions
             for (const gesture_set& S : O.m_Gestures) for (const gesture& G : S.m_List) Flat.push_back({ S.m_pSurface, &G });
 
             details::keyboard_args A;
-            A.m_Unit      = std::clamp((pVp->Size.x * 0.9f - 24.0f) / (details::k_KeyboardUnitsW + 5.0f), 30.0f, 54.0f);
+            A.m_Unit      = std::clamp((pVp->Size.x * 0.9f - 24.0f) / (details::k_KeyboardUnitsW + 4.6f), 30.0f, 54.0f);
             A.m_bNames    = true;
             A.m_Mods      = Mods;
             A.m_pToggle[0]= &O.m_bCtrl; A.m_pToggle[1] = &O.m_bShift; A.m_pToggle[2] = &O.m_bAlt;
@@ -422,6 +496,7 @@ namespace ximgui::actions
             if (ImGui::GetFrameCount() > O.m_OpenFrame && (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_F1, false))) bClose = true;
         }
         ImGui::End();
+        if (!bWindowOpen) bClose = true;
         if (bClose) Ctx.CloseOverlay();
     }
 
@@ -513,16 +588,21 @@ namespace ximgui::actions
         if (ImGui::Begin("##ActionPalette", nullptr, Flags))
         {
             bool bTyped;
-            if (Ctx.m_pSearchBox) bTyped = Ctx.m_pSearchBox(P.m_Query, ImGui::GetContentRegionAvail().x, P.m_bFocus);
+            const float CloseSize = ImGui::GetFrameHeight();
+            const float SearchW   = ImGui::GetContentRegionAvail().x - CloseSize - ImGui::GetStyle().ItemSpacing.x;       // room for the X that closes the palette
+            if (Ctx.m_pSearchBox) bTyped = Ctx.m_pSearchBox(P.m_Query, SearchW, P.m_bFocus);
             else
             {
                 char Buffer[128]{};
                 std::snprintf(Buffer, sizeof(Buffer), "%s", P.m_Query.c_str());
                 if (P.m_bFocus) ImGui::SetKeyboardFocusHere();
-                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::SetNextItemWidth(SearchW);
                 bTyped = ImGui::InputTextWithHint("##query", "Type an action...", Buffer, sizeof(Buffer));
                 P.m_Query = Buffer;
             }
+            ImGui::SameLine();
+            if (ImGui::Button("X##ClosePalette", ImVec2(CloseSize, CloseSize))) bClose = true;
+            if (ImGui::IsItemHovered()) Ctx.ShowHint({ "Close", "Closes the palette. Esc does too.", "Esc", "", "" });
             P.m_bFocus = false;
             if (bTyped) P.m_Selected = 0;
             ImGui::Dummy(ImVec2(0.0f, 4.0f));            // the search box draws a focus ring: keep what follows clear of it
@@ -652,6 +732,8 @@ namespace ximgui::actions
             ImGui::TextUnformatted(H.m_Topic.c_str());
             ImGui::PopFont();
             if (!H.m_Shortcut.empty()) { ImGui::SameLine(0.0f, 14.0f); ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.35f, 1.0f), "[%s]", H.m_Shortcut.c_str()); }
+            ImGui::SameLine(Width - 24.0f - ImGui::GetFrameHeight() * 0.8f);
+            if (ImGui::SmallButton("X##ClosePinned")) bClose = true;
             ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + Width - 24.0f);
             if (!H.m_Body.empty())     { ImGui::Spacing(); ImGui::TextUnformatted(H.m_Body.c_str()); }
             if (!H.m_Disabled.empty()) { ImGui::Spacing(); ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.38f, 1.0f), "Unavailable: %s", H.m_Disabled.c_str()); }
