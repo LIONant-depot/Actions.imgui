@@ -68,7 +68,7 @@ namespace ximgui::actions
     {
         File = {};
         xtextfile::stream Stream;
-        if (auto Err = Stream.Open(true, KeymapFileName(Dir, Name), { xtextfile::file_type::TEXT }); Err) return {};
+        if (auto Err = Stream.Open(true, KeymapFileName(Dir, Name), xtextfile::file_type::TEXT); Err) return {};
         xproperty::settings::context Context;
         return xproperty::sprop::serializer::Stream(Stream, File, Context);
     }
@@ -77,7 +77,7 @@ namespace ximgui::actions
     {
         std::filesystem::create_directories(Dir);
         xtextfile::stream Stream;
-        if (auto Err = Stream.Open(false, KeymapFileName(Dir, Name), { xtextfile::file_type::TEXT }); Err) return Err;
+        if (auto Err = Stream.Open(false, KeymapFileName(Dir, Name), xtextfile::file_type::TEXT); Err) return Err;
         xproperty::settings::context Context;
         return xproperty::sprop::serializer::Stream(Stream, const_cast<keymap_file&>(File), Context);
     }
