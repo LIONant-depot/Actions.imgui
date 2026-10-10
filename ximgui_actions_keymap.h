@@ -60,7 +60,7 @@ namespace ximgui::actions
 
     inline std::wstring KeymapFileName(const std::wstring& Dir, const std::string& Name)
     {
-        return std::format(L"{}\\{}.keymap.txt", Dir, std::wstring(Name.begin(), Name.end()));
+        return (std::filesystem::path(Dir) / (std::wstring(Name.begin(), Name.end()) + L".keymap.txt")).wstring();
     }
 
     // A missing file is not an error: File is left empty.
